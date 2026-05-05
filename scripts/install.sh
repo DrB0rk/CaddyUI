@@ -202,6 +202,10 @@ want_systemd_service() {
 }
 start_with_systemd() {
   local service_path="/etc/systemd/system/${SERVICE_NAME}.service"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '[dry-run] write %s\n' "$service_path" >> "$INSTALL_LOG"
+    return 0
+  fi
   cat > "$service_path" <<SERVICE
 [Unit]
 Description=CaddyUI web interface
@@ -295,32 +299,45 @@ extract_domains() {
         if (host ~ /^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/ && host !~ /^\(/) print host
       }
     }
-  ' "$file" | awk -F. '{ if (NF>=2) print $(NF-1) "." $NF }' | awk 'NF && !seen[$0]++'
+  ' "$file"
+}
+base_domain() {
+  local host="$1"
+  awk -F. '{ if (NF>=2) print $(NF-1) "." $NF; else print $0 }' <<< "$host"
 }
 choose_proxy_target() {
   local files=()
-  local domains=()
-  local file domain answer index
+  local options=()
+  local file host domain answer index subdomain
   mapfile -t files < <(find_caddyfiles)
   [[ "${#files[@]}" -gt 0 ]] || return 1
   for file in "${files[@]}"; do
-    while read -r domain; do
-      [[ -n "$domain" ]] && domains+=("$file|$domain")
+    while read -r host; do
+      [[ -n "$host" ]] || continue
+      domain="$(base_domain "$host")"
+      [[ -n "$domain" ]] && options+=("$file|$domain")
     done < <(extract_domains "$file")
   done
-  [[ "${#domains[@]}" -gt 0 ]] || return 1
+  [[ "${#options[@]}" -gt 0 ]] || return 1
+  mapfile -t options < <(printf '%s\n' "${options[@]}" | awk 'NF && !seen[$0]++')
   printf "%b\n" "${BLUE}▶${NC} ${BOLD}Caddy reverse proxy${NC}" >&2
-  printf 'Found domains:\n' >&2
-  for i in "${!domains[@]}"; do
-    printf '  %s) caddyui.%s\n' "$((i+1))" "${domains[$i]#*|}" >&2
+  printf 'Choose domain:\n' >&2
+  for i in "${!options[@]}"; do
+    printf '  %s) %s\n' "$((i+1))" "${options[$i]#*|}" >&2
   done
   if [[ "${CADDYUI_PROXY:-}" == "0" ]]; then return 1; fi
-  if [[ "${CADDYUI_PROXY:-}" == "1" ]]; then echo "${domains[0]}"; return 0; fi
+  if [[ "${CADDYUI_PROXY:-}" == "1" ]]; then
+    subdomain="${CADDYUI_PROXY_SUBDOMAIN:-caddyui}"
+    echo "${options[0]}|$subdomain"
+    return 0
+  fi
   answer="$(read_tty "Add a Caddy reverse proxy entry? Enter number or press Enter to skip: " || true)"
   [[ -n "$answer" && "$answer" =~ ^[0-9]+$ ]] || return 1
   index=$((answer-1))
-  [[ "$index" -ge 0 && "$index" -lt "${#domains[@]}" ]] || return 1
-  echo "${domains[$index]}"
+  [[ "$index" -ge 0 && "$index" -lt "${#options[@]}" ]] || return 1
+  subdomain="$(read_tty "Subdomain [caddyui]: " || true)"
+  subdomain="${subdomain:-caddyui}"
+  echo "${options[$index]}|$subdomain"
 }
 write_caddyfile() {
   local file="$1"
@@ -341,12 +358,14 @@ copy_caddyfile() {
   fi
 }
 setup_caddy_proxy() {
-  local target file domain host block backup validation
+  local target file domain_sub domain subdomain host block backup validation
   target="$(choose_proxy_target || true)"
   [[ -n "$target" ]] || { ok "Caddy reverse proxy skipped"; return 0; }
   file="${target%%|*}"
-  domain="${target#*|}"
-  host="caddyui.$domain"
+  domain_sub="${target#*|}"
+  domain="${domain_sub%%|*}"
+  subdomain="${domain_sub#*|}"
+  host="${subdomain}.${domain}"
   if grep -Eq "^[[:space:]]*$host[[:space:]]*\{" "$file"; then
     ok "Caddy reverse proxy already exists: $host"
     return 0
