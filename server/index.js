@@ -320,6 +320,6 @@ app.post('/api/settings', auth, async (req, res) => {
 if (process.env.NODE_ENV === 'production') {
   const dist = path.join(ROOT, 'dist');
   app.use(express.static(dist));
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+  app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 app.listen(PORT, () => console.log(`CaddyUI API listening on :${PORT}`));
