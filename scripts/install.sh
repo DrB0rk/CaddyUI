@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-4"
+SCRIPT_VERSION="2026.05.05-5"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-main}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -297,7 +297,7 @@ extract_domains() {
     | tr ',' '\n' \
     | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s#^https?://##; s/:.*$//' \
     | grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' \
-    | awk 'NF && $0 !~ /^\\(/ && !seen[$0]++'
+    | awk 'NF && $0 !~ /^\(/ && !seen[$0]++'
 }
 base_domain() {
   local host="$1"
