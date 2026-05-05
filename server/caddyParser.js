@@ -1,0 +1,257 @@
+const stripInlineComment = (line) => {
+  let inQuote = false;
+  let escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (escaped) { escaped = false; continue; }
+    if (char === '\\') { escaped = true; continue; }
+    if (char === '"') inQuote = !inQuote;
+    if (char === '#' && !inQuote) return line.slice(0, i);
+  }
+  return line;
+};
+
+const firstToken = (line) => line.trim().split(/\s+/)[0] || '';
+const normalizeAddress = (line) => line.replace(/\s*\{\s*$/, '').trim();
+
+function findMatchingBrace(lines, startIndex) {
+  let depth = 0;
+  for (let i = startIndex; i < lines.length; i++) {
+    const clean = stripInlineComment(lines[i]);
+    for (const char of clean) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+    if (depth === 0) return i;
+  }
+  return lines.length - 1;
+}
+
+function collectDirectives(lines, start, end) {
+  const directives = [];
+  for (let i = start; i <= end; i++) {
+    const raw = lines[i];
+    const clean = stripInlineComment(raw).trim();
+    if (!clean || clean === '}' || clean.endsWith('{')) continue;
+    const [name, ...args] = clean.split(/\s+/);
+    directives.push({ name, args, raw: raw.trim(), line: i + 1 });
+  }
+  return directives;
+}
+
+function collectImports(lines, start, end) {
+  return collectDirectives(lines, start, end)
+    .filter((d) => d.name === 'import')
+    .map((d) => ({ name: d.args[0], args: d.args.slice(1), line: d.line }));
+}
+
+function parseNamedMatchers(lines, start, end) {
+  const matchers = [];
+  for (let i = start; i <= end; i++) {
+    const clean = stripInlineComment(lines[i]).trim();
+    if (!clean.startsWith('@')) continue;
+    const [name, ...rest] = clean.split(/\s+/);
+    if (clean.endsWith('{')) {
+      const blockEnd = findMatchingBrace(lines, i);
+      matchers.push({ name, type: 'block', args: rest.filter((x) => x !== '{'), body: lines.slice(i + 1, blockEnd).map((l) => l.trim()).filter(Boolean), line: i + 1 });
+      i = blockEnd;
+    } else {
+      matchers.push({ name, type: rest[0] || 'inline', args: rest.slice(1), line: i + 1 });
+    }
+  }
+  return matchers;
+}
+
+function parseProxyFromLine(line, lineNumber, blockLines = [], endLine = lineNumber) {
+  const clean = stripInlineComment(line).replace(/\s*\{\s*$/, '').trim();
+  const parts = clean.split(/\s+/);
+  const idx = parts.indexOf('reverse_proxy');
+  if (idx === -1) return null;
+  const maybeMatcher = parts[idx + 1]?.startsWith('@') ? parts[idx + 1] : null;
+  const upstreams = parts.slice(idx + 1 + (maybeMatcher ? 1 : 0));
+  const imports = blockLines
+    .map((l, n) => ({ raw: stripInlineComment(l).trim(), line: lineNumber + n + 1 }))
+    .filter((d) => d.raw.startsWith('import '))
+    .map((d) => ({ name: d.raw.split(/\s+/)[1], line: d.line }));
+  const options = blockLines.map((l) => l.trim()).filter(Boolean);
+  return { matcher: maybeMatcher, upstreams, imports, options, line: lineNumber, endLine };
+}
+
+function parseForwardAuthFromLine(line, lineNumber, blockLines = []) {
+  const clean = stripInlineComment(line).replace(/\s*\{\s*$/, '').trim();
+  const parts = clean.split(/\s+/);
+  const idx = parts.indexOf('forward_auth');
+  if (idx === -1) return null;
+  return {
+    upstream: parts[idx + 1] || '',
+    options: blockLines.map((l) => l.trim()).filter(Boolean),
+    line: lineNumber,
+  };
+}
+
+function scanBlocks(lines, start, end) {
+  const proxies = [];
+  const forwardAuth = [];
+  const handles = [];
+  const directives = [];
+  for (let i = start; i <= end; i++) {
+    const raw = lines[i];
+    const clean = stripInlineComment(raw).trim();
+    if (!clean || clean === '}') continue;
+
+    if (/^handle\b/.test(clean) && clean.endsWith('{')) {
+      const blockEnd = findMatchingBrace(lines, i);
+      const child = scanBlocks(lines, i + 1, blockEnd - 1);
+      handles.push({ matcher: clean.replace(/\s*\{\s*$/, '').split(/\s+/)[1] || null, line: i + 1, proxies: child.proxies, directives: child.directives });
+      proxies.push(...child.proxies.map((p) => ({ ...p, context: 'handle', handleMatcher: clean.split(/\s+/)[1] || null })));
+      i = blockEnd;
+      continue;
+    }
+
+    if (clean.includes('reverse_proxy')) {
+      let blockLines = [];
+      if (clean.endsWith('{')) {
+        const blockEnd = findMatchingBrace(lines, i);
+        blockLines = lines.slice(i + 1, blockEnd);
+        const proxy = parseProxyFromLine(raw, i + 1, blockLines, blockEnd + 1);
+        if (proxy) proxies.push(proxy);
+        i = blockEnd;
+      } else {
+        const proxy = parseProxyFromLine(raw, i + 1, [], i + 1);
+        if (proxy) proxies.push(proxy);
+      }
+      continue;
+    }
+
+    if (clean.includes('forward_auth')) {
+      let blockLines = [];
+      if (clean.endsWith('{')) {
+        const blockEnd = findMatchingBrace(lines, i);
+        blockLines = lines.slice(i + 1, blockEnd);
+        const auth = parseForwardAuthFromLine(raw, i + 1, blockLines);
+        if (auth) forwardAuth.push(auth);
+        i = blockEnd;
+      } else {
+        const auth = parseForwardAuthFromLine(raw, i + 1);
+        if (auth) forwardAuth.push(auth);
+      }
+      continue;
+    }
+
+    if (!clean.endsWith('{')) {
+      const [name, ...args] = clean.split(/\s+/);
+      directives.push({ name, args, raw: raw.trim(), line: i + 1 });
+    }
+  }
+  return { proxies, forwardAuth, handles, directives };
+}
+
+export function parseCaddyfile(source = '') {
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const snippets = [];
+  const sites = [];
+  const globals = [];
+  const warnings = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const clean = stripInlineComment(lines[i]).trim();
+    if (!clean || clean.startsWith('#') || clean === '}') continue;
+
+    if (clean.endsWith('{')) {
+      const header = normalizeAddress(clean);
+      const end = findMatchingBrace(lines, i);
+      const bodyStart = i + 1;
+      const bodyEnd = Math.max(i, end - 1);
+      const body = lines.slice(bodyStart, end).join('\n');
+      const scan = scanBlocks(lines, bodyStart, bodyEnd);
+      const imports = collectImports(lines, bodyStart, bodyEnd);
+      const matchers = parseNamedMatchers(lines, bodyStart, bodyEnd);
+
+      if (/^\(.+\)$/.test(header)) {
+        snippets.push({ name: header.slice(1, -1), line: i + 1, endLine: end + 1, imports, directives: scan.directives, forwardAuth: scan.forwardAuth, body });
+      } else if (header === '') {
+        globals.push({ line: i + 1, endLine: end + 1, body });
+      } else {
+        const addresses = header.split(',').map((x) => x.trim()).filter(Boolean);
+        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, body });
+      }
+      i = end;
+    } else if (clean.includes('{') && !clean.endsWith('{')) {
+      warnings.push({ line: i + 1, message: 'Inline blocks are only partially represented in the visual parser.' });
+    }
+  }
+
+  const importedSnippetNames = new Set([...sites, ...snippets].flatMap((x) => x.imports.map((i) => i.name)));
+  const middlewareSnippets = snippets.map((snippet) => ({
+    ...snippet,
+    usedBy: sites.filter((site) => site.imports.some((i) => i.name === snippet.name)).map((site) => site.addresses.join(', ')),
+    inferredType: snippet.forwardAuth.length ? 'auth' : snippet.directives.some((d) => d.name.startsWith('header')) ? 'headers' : snippet.directives.some((d) => d.name === 'tls') ? 'tls' : 'snippet',
+  }));
+
+  return {
+    summary: { sites: sites.length, proxies: sites.reduce((sum, site) => sum + site.proxies.length, 0), snippets: snippets.length, middleware: importedSnippetNames.size },
+    sites,
+    snippets: middlewareSnippets,
+    globals,
+    warnings,
+  };
+}
+
+export function appendSimpleProxy(source, { host, upstream, imports = [] }) {
+  const safeHost = String(host || '').trim();
+  const safeUpstream = String(upstream || '').trim();
+  if (!safeHost || !safeUpstream) throw new Error('Host and upstream are required.');
+  const importLines = imports.filter(Boolean).map((name) => `\timport ${name}`).join('\n');
+  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}\treverse_proxy ${safeUpstream}\n}\n`;
+  return `${source.trimEnd()}\n\n${block}`;
+}
+
+
+export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [] }) {
+  const safeHost = String(host || '').trim();
+  const safeUpstream = String(upstream || '').trim();
+  const targetLine = Number(siteLine);
+  if (!targetLine || !safeHost || !safeUpstream) throw new Error('Site line, host and upstream are required.');
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const start = targetLine - 1;
+  if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
+  const end = findMatchingBrace(lines, start);
+  const importLines = imports.filter(Boolean).map((name) => `\timport ${name}`).join('\n');
+  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}\treverse_proxy ${safeUpstream}\n}`.split('\n');
+  lines.splice(start, end - start + 1, ...block);
+  return lines.join('\n');
+}
+
+
+export function appendSnippet(source, { name, body = '' }) {
+  const safeName = String(name || '').trim().replace(/^\(|\)$/g, '');
+  if (!safeName) throw new Error('Middleware name is required.');
+  const safeBody = String(body || '').trim();
+  const block = `(${safeName}) {\n${safeBody.split('\n').filter(Boolean).map((line) => `\t${line.trim()}`).join('\n')}\n}\n`;
+  return `${source.trimEnd()}\n\n${block}`;
+}
+
+export function updateSnippet(source, { line, name, body = '' }) {
+  const targetLine = Number(line);
+  const safeName = String(name || '').trim().replace(/^\(|\)$/g, '');
+  if (!targetLine || !safeName) throw new Error('Middleware line and name are required.');
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const start = targetLine - 1;
+  if (start < 0 || start >= lines.length) throw new Error('Middleware block was not found.');
+  const end = findMatchingBrace(lines, start);
+  const block = `(${safeName}) {\n${String(body || '').trim().split('\n').filter(Boolean).map((l) => `\t${l.trim()}`).join('\n')}\n}`.split('\n');
+  lines.splice(start, end - start + 1, ...block);
+  return lines.join('\n');
+}
+
+
+export function deleteBlockAtLine(source, line) {
+  const targetLine = Number(line);
+  if (!targetLine) throw new Error('Line is required.');
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const start = targetLine - 1;
+  if (start < 0 || start >= lines.length) throw new Error('Block was not found.');
+  const end = findMatchingBrace(lines, start);
+  lines.splice(start, end - start + 1);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
