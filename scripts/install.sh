@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
+SCRIPT_VERSION="2026.05.05-1"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-main}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -37,7 +38,8 @@ logo() {
 \____/\__,_/\__,_/\__,_/\__, /\____/___/   
                         /____/             
 ART
-  printf "%b\n" "${NC}${BOLD}Automated installer${NC}\n"
+  printf "%b\n" "${NC}${BOLD}Automated installer${NC}"
+  printf "%b\n" "version ${SCRIPT_VERSION}\n"
 }
 
 step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }
