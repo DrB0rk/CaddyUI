@@ -65,6 +65,10 @@ app.use((_req, res, next) => {
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true }); }
 
 function settingsFileMode() { return 0o600; }
+
+function requestProto(req) {
+  return req.headers['x-forwarded-proto']?.toString().split(',')[0].trim().toLowerCase() || (req.secure ? 'https' : 'http');
+}
 function requestHost(req) {
   const forwarded = req.headers['x-forwarded-host'];
   const host = Array.isArray(forwarded) ? forwarded[0] : forwarded || req.headers.host || '';
@@ -78,7 +82,7 @@ function requestOrigin(req) {
   return normalizedOrigin(req.headers.origin || req.headers.referer || '');
 }
 function expectedOrigin(req) {
-  const proto = req.headers['x-forwarded-proto']?.toString().split(',')[0].trim() || (req.secure ? 'https' : 'http');
+  const proto = requestProto(req);
   const host = requestHost(req);
   return host ? `${proto}://${host}`.toLowerCase() : '';
 }
@@ -92,7 +96,8 @@ function requireTrustedOrigin(req, res, next) {
   return res.status(403).json({ error: 'Origin not allowed.' });
 }
 function cookieOptions(req) {
-  return { httpOnly: true, sameSite: 'strict', secure: process.env.CADDY_UI_INSECURE_COOKIE === '1' ? false : (req.secure || IS_PRODUCTION), path: '/' };
+  const secure = process.env.CADDY_UI_INSECURE_COOKIE === '1' ? false : (process.env.CADDY_UI_SECURE_COOKIE === '1' || requestProto(req) === 'https');
+  return { httpOnly: true, sameSite: 'strict', secure, path: '/' };
 }
 function clientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
