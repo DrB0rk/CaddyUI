@@ -270,6 +270,9 @@ read_tty() {
   fi
   printf '%s' "$answer"
 }
+valid_domain() {
+  [[ "$1" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]
+}
 find_caddyfiles() {
   local paths=(
     "${CADDYFILE_PATH:-}"
@@ -308,7 +311,7 @@ base_domain() {
 choose_proxy_target() {
   local files=()
   local options=()
-  local file host domain answer index subdomain
+  local file host domain answer index subdomain manual_domain
   mapfile -t files < <(find_caddyfiles)
   [[ "${#files[@]}" -gt 0 ]] || return 1
   for file in "${files[@]}"; do
@@ -321,18 +324,32 @@ choose_proxy_target() {
   [[ "${#options[@]}" -gt 0 ]] || return 1
   mapfile -t options < <(printf '%s\n' "${options[@]}" | awk 'NF && !seen[$0]++')
   printf "%b\n" "${BLUE}▶${NC} ${BOLD}Caddy reverse proxy${NC}" >&2
+  printf 'Detected Caddyfiles:\n' >&2
+  for file in "${files[@]}"; do
+    printf '  - %s\n' "$file" >&2
+  done
   printf 'Choose domain:\n' >&2
   for i in "${!options[@]}"; do
     printf '  %s) %s\n' "$((i+1))" "${options[$i]#*|}" >&2
   done
+  printf '  m) manual domain\n' >&2
   if [[ "${CADDYUI_PROXY:-}" == "0" ]]; then return 1; fi
   if [[ "${CADDYUI_PROXY:-}" == "1" ]]; then
     subdomain="${CADDYUI_PROXY_SUBDOMAIN:-caddyui}"
     echo "${options[0]}|$subdomain"
     return 0
   fi
-  answer="$(read_tty "Add a Caddy reverse proxy entry? Enter number or press Enter to skip: " || true)"
-  [[ -n "$answer" && "$answer" =~ ^[0-9]+$ ]] || return 1
+  answer="$(read_tty "Add a Caddy reverse proxy entry? [1]: " || true)"
+  answer="${answer:-1}"
+  if [[ "$answer" == "m" || "$answer" == "M" ]]; then
+    manual_domain="$(read_tty "Domain: " || true)"
+    valid_domain "$manual_domain" || return 1
+    subdomain="$(read_tty "Subdomain [caddyui]: " || true)"
+    subdomain="${subdomain:-caddyui}"
+    echo "${files[0]}|${manual_domain}|$subdomain"
+    return 0
+  fi
+  [[ "$answer" =~ ^[0-9]+$ ]] || return 1
   index=$((answer-1))
   [[ "$index" -ge 0 && "$index" -lt "${#options[@]}" ]] || return 1
   subdomain="$(read_tty "Subdomain [caddyui]: " || true)"
