@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-2"
+SCRIPT_VERSION="2026.05.05-3"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-main}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -316,7 +316,7 @@ choose_proxy_target() {
   local file host domain answer index subdomain manual_domain explicit_domain
   mapfile -t files < <(find_caddyfiles)
   if [[ "${#files[@]}" -eq 0 ]]; then
-    warn "No readable Caddyfile found for reverse proxy setup."
+    printf "%b\n" "${YELLOW}!${NC} No readable Caddyfile found for reverse proxy setup." >&2
     return 1
   fi
   if [[ -n "${CADDYUI_PROXY_DOMAIN:-}" ]]; then
@@ -334,8 +334,14 @@ choose_proxy_target() {
     done < <(extract_domains "$file")
   done
   if [[ "${#options[@]}" -eq 0 ]]; then
-    warn "No domains found in detected Caddyfiles for reverse proxy setup."
-    return 1
+    printf "%b\n" "${YELLOW}!${NC} No domains found in detected Caddyfiles." >&2
+    if [[ "${CADDYUI_PROXY:-}" == "0" ]]; then return 1; fi
+    manual_domain="$(read_tty "Domain: " || true)"
+    valid_domain "$manual_domain" || return 1
+    subdomain="$(read_tty "Subdomain [caddyui]: " || true)"
+    subdomain="${subdomain:-caddyui}"
+    echo "${files[0]}|${manual_domain}|$subdomain"
+    return 0
   fi
   mapfile -t options < <(printf '%s\n' "${options[@]}" | awk 'NF && !seen[$0]++')
   printf "%b\n" "${BLUE}▶${NC} ${BOLD}Caddy reverse proxy${NC}" >&2
