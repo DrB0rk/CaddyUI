@@ -13,12 +13,18 @@ import dns from 'node:dns/promises';
 import { parseCaddyfile, appendSimpleProxy, updateSimpleProxy, appendSnippet, updateSnippet, deleteBlockAtLine } from './caddyParser.js';
 
 const app = express();
+app.disable('x-powered-by');
 const PORT = Number(process.env.CADDY_UI_PORT || process.env.PORT || 8787);
 const ROOT = process.cwd();
 const DATA_DIR = process.env.CADDY_UI_DATA_DIR || path.join(ROOT, 'data');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
-const JWT_SECRET = process.env.CADDY_UI_SECRET || 'dev-change-me-caddy-ui';
+const DEFAULT_SECRET = 'dev-change-me-caddy-ui';
+const JWT_SECRET = process.env.CADDY_UI_SECRET || DEFAULT_SECRET;
 const COOKIE_NAME = 'caddyui_token';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
+const LOGIN_WINDOW_MS = Number(process.env.CADDY_UI_LOGIN_WINDOW_MS || 15 * 60 * 1000);
+const LOGIN_MAX_ATTEMPTS = Number(process.env.CADDY_UI_LOGIN_MAX_ATTEMPTS || 5);
 const COMMON_CADDYFILES = [
   path.join(ROOT, 'Caddyfile'),
   '/etc/caddy/Caddyfile',
@@ -36,11 +42,86 @@ const COMMON_LOGS = [
   '/config/log/caddy.log',
 ].filter(Boolean);
 
-app.use(cors({ origin: true, credentials: true }));
+app.set('trust proxy', process.env.CADDY_UI_TRUST_PROXY === '0' ? false : 1);
+const loginAttempts = new Map();
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (!IS_PRODUCTION) return callback(null, true);
+    return callback(null, ALLOWED_ORIGINS.has(origin));
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
+app.use((_req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
 
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true }); }
+
+function settingsFileMode() { return 0o600; }
+function requestHost(req) {
+  const forwarded = req.headers['x-forwarded-host'];
+  const host = Array.isArray(forwarded) ? forwarded[0] : forwarded || req.headers.host || '';
+  return String(host).split(',')[0].trim().toLowerCase();
+}
+function normalizedOrigin(origin) {
+  try { return new URL(origin).origin.toLowerCase(); } catch { return ''; }
+}
+const ALLOWED_ORIGINS = new Set((process.env.CADDY_UI_ALLOWED_ORIGINS || '').split(',').map((x) => normalizedOrigin(x.trim())).filter(Boolean));
+function requestOrigin(req) {
+  return normalizedOrigin(req.headers.origin || req.headers.referer || '');
+}
+function expectedOrigin(req) {
+  const proto = req.headers['x-forwarded-proto']?.toString().split(',')[0].trim() || (req.secure ? 'https' : 'http');
+  const host = requestHost(req);
+  return host ? `${proto}://${host}`.toLowerCase() : '';
+}
+function originAllowed(req) {
+  const origin = requestOrigin(req);
+  if (!origin) return !IS_PRODUCTION;
+  return origin === expectedOrigin(req) || ALLOWED_ORIGINS.has(origin) || (!IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin));
+}
+function requireTrustedOrigin(req, res, next) {
+  if (originAllowed(req)) return next();
+  return res.status(403).json({ error: 'Origin not allowed.' });
+}
+function cookieOptions(req) {
+  return { httpOnly: true, sameSite: 'strict', secure: process.env.CADDY_UI_INSECURE_COOKIE === '1' ? false : (req.secure || IS_PRODUCTION), path: '/' };
+}
+function clientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim();
+  return String(req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+}
+function privateIp(ip) {
+  return /^127\./.test(ip) || ip === '::1' || /^10\./.test(ip) || /^192\.168\./.test(ip) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip);
+}
+function requireSetupOrigin(req, res, next) {
+  if (ALLOW_REMOTE_SETUP || !IS_PRODUCTION || privateIp(clientIp(req))) return next();
+  return res.status(403).json({ error: 'Initial setup is blocked from public addresses.' });
+}
+function tooManyAttempts(key) {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now > entry.resetAt) { loginAttempts.set(key, { count: 0, resetAt: now + LOGIN_WINDOW_MS }); return false; }
+  return entry.count >= LOGIN_MAX_ATTEMPTS;
+}
+function recordFailedAttempt(key) {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now > entry.resetAt) { loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS }); return; }
+  entry.count += 1;
+}
+function clearAttempts(key) { loginAttempts.delete(key); }
+if (IS_PRODUCTION && (JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32)) {
+  throw new Error('Set CADDY_UI_SECRET to a strong value.');
+}
 async function loadSettings() {
   await ensureDataDir();
   try { return JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8')); }
@@ -48,11 +129,19 @@ async function loadSettings() {
 }
 async function saveSettings(settings) {
   await ensureDataDir();
-  await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: settingsFileMode() });
+  try { await fs.chmod(SETTINGS_PATH, settingsFileMode()); } catch {}
 }
 const publicSettings = (s) => ({ userConfigured: Boolean(s.user), caddyConfigured: Boolean(s.configured && s.caddyfilePath), configured: Boolean(s.configured && s.user && s.caddyfilePath), caddyfilePath: s.caddyfilePath || '', logPaths: s.logPaths || COMMON_LOGS, username: s.user?.username || '' });
 
-function sign(username) { return jwt.sign({ username }, JWT_SECRET, { expiresIn: '7d' }); }
+function statusSettings(settings, authenticated) {
+  const base = { userConfigured: Boolean(settings.user), caddyConfigured: Boolean(settings.configured && settings.caddyfilePath), configured: Boolean(settings.configured && settings.user && settings.caddyfilePath), username: authenticated ? settings.user?.username || '' : '' };
+  if (!authenticated) return { ...base, caddyfilePath: '', logPaths: [] };
+  return { ...base, caddyfilePath: settings.caddyfilePath || '', logPaths: settings.logPaths || COMMON_LOGS };
+}
+
+
+function sign(username) { return jwt.sign({ username }, JWT_SECRET, { expiresIn: '12h' }); }
 function auth(req, res, next) {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
@@ -145,9 +234,11 @@ async function collectLogs(settings, lines = 200) {
 
 app.get('/api/status', async (req, res) => {
   const settings = await loadSettings();
-  res.json({ settings: publicSettings(settings), authenticated: Boolean(authenticatedUser(req)), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(settings) } });
+  const authenticated = Boolean(authenticatedUser(req));
+  const canDiscover = authenticated || !settings.user;
+  res.json({ settings: statusSettings(settings, authenticated), authenticated, discovered: canDiscover ? { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(settings) } : { caddyfiles: [], logfiles: [] } });
 });
-app.post('/api/setup/user', async (req, res) => {
+app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req, res) => {
   const settings = await loadSettings();
   if (settings.user) return res.status(409).json({ error: 'Admin user is already configured.' });
   const { username, password } = req.body || {};
@@ -155,10 +246,10 @@ app.post('/api/setup/user', async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 12);
   const next = { ...settings, configured: false, user: { username, passwordHash } };
   await saveSettings(next);
-  res.cookie(COOKIE_NAME, sign(username), { httpOnly: true, sameSite: 'lax', secure: false });
+  res.cookie(COOKIE_NAME, sign(username), cookieOptions(req));
   res.json({ settings: publicSettings(next), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) } });
 });
-app.post('/api/setup/config', auth, async (req, res) => {
+app.post('/api/setup/config', requireTrustedOrigin, auth, async (req, res) => {
   const settings = await loadSettings();
   const { caddyfilePath, logPaths = [] } = req.body || {};
   if (!caddyfilePath || !fssync.existsSync(caddyfilePath)) return res.status(400).json({ error: 'A readable Caddyfile path is required.' });
@@ -166,7 +257,7 @@ app.post('/api/setup/config', auth, async (req, res) => {
   await saveSettings(next);
   res.json({ settings: publicSettings(next), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) } });
 });
-app.post('/api/onboard', async (req, res) => {
+app.post('/api/onboard', requireTrustedOrigin, requireSetupOrigin, async (req, res) => {
   const settings = await loadSettings();
   if (settings.configured && settings.user) return res.status(409).json({ error: 'CaddyUI is already configured.' });
   const { username, password, caddyfilePath, logPaths = [] } = req.body || {};
@@ -175,19 +266,23 @@ app.post('/api/onboard', async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 12);
   const next = { configured: true, caddyfilePath, logPaths: [...new Set([...logPaths, ...COMMON_LOGS].filter(Boolean))], user: { username, passwordHash } };
   await saveSettings(next);
-  res.cookie(COOKIE_NAME, sign(username), { httpOnly: true, sameSite: 'lax', secure: false });
+  res.cookie(COOKIE_NAME, sign(username), cookieOptions(req));
   res.json({ settings: publicSettings(next), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) } });
 });
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', requireTrustedOrigin, async (req, res) => {
   const settings = await loadSettings();
   const { username, password } = req.body || {};
+  const rateKey = `${clientIp(req)}:${String(username || '')}`;
+  if (tooManyAttempts(rateKey)) return res.status(429).json({ error: 'Too many login attempts.' });
   if (!settings.user || username !== settings.user.username || !(await bcrypt.compare(password || '', settings.user.passwordHash))) {
+    recordFailedAttempt(rateKey);
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
-  res.cookie(COOKIE_NAME, sign(username), { httpOnly: true, sameSite: 'lax', secure: false });
+  clearAttempts(rateKey);
+  res.cookie(COOKIE_NAME, sign(username), cookieOptions(req));
   res.json({ settings: publicSettings(settings) });
 });
-app.post('/api/logout', (_req, res) => { res.clearCookie(COOKIE_NAME); res.json({ ok: true }); });
+app.post('/api/logout', requireTrustedOrigin, (req, res) => { res.clearCookie(COOKIE_NAME, cookieOptions(req)); res.json({ ok: true }); });
 app.get('/api/config', auth, async (_req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
@@ -195,7 +290,7 @@ app.get('/api/config', auth, async (_req, res) => {
     res.json({ path: settings.caddyfilePath, content, parsed, health: await checkProxyHealth(parsed) });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
-app.post('/api/config', auth, async (req, res) => {
+app.post('/api/config', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const settings = await loadSettings();
     const { content, validate = true } = req.body || {};
@@ -225,17 +320,17 @@ app.get('/api/proxies/health', auth, async (_req, res) => {
     res.json({ health: await checkProxyHealth(parsed) });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
-app.post('/api/config/validate', auth, async (req, res) => {
+app.post('/api/config/validate', requireTrustedOrigin, auth, async (req, res) => {
   const content = typeof req.body?.content === 'string' ? req.body.content : (await readConfiguredCaddyfile()).content;
   res.json(await validateConfig(content));
 });
-app.post('/api/config/reload', auth, async (_req, res) => {
+app.post('/api/config/reload', requireTrustedOrigin, auth, async (_req, res) => {
   const settings = await loadSettings();
   const result = await run('caddy', ['reload', '--config', settings.caddyfilePath, '--adapter', 'caddyfile']);
   if (result.code === -1) return res.status(503).json({ ...result, stderr: 'Caddy binary is not available in this container. Run CaddyUI where it can execute caddy reload.' });
   res.status(result.ok ? 200 : 400).json(result);
 });
-app.post('/api/proxies', auth, async (req, res) => {
+app.post('/api/proxies', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = appendSimpleProxy(content, req.body || {});
@@ -246,7 +341,7 @@ app.post('/api/proxies', auth, async (req, res) => {
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
-app.put('/api/proxies/:line', auth, async (req, res) => {
+app.put('/api/proxies/:line', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = updateSimpleProxy(content, { ...req.body, siteLine: req.params.line });
@@ -259,7 +354,7 @@ app.put('/api/proxies/:line', auth, async (req, res) => {
 
 
 
-app.delete('/api/proxies/:line', auth, async (req, res) => {
+app.delete('/api/proxies/:line', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = deleteBlockAtLine(content, req.params.line);
@@ -270,7 +365,7 @@ app.delete('/api/proxies/:line', auth, async (req, res) => {
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
-app.post('/api/middlewares', auth, async (req, res) => {
+app.post('/api/middlewares', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = appendSnippet(content, req.body || {});
@@ -280,7 +375,7 @@ app.post('/api/middlewares', auth, async (req, res) => {
     res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
-app.put('/api/middlewares/:line', auth, async (req, res) => {
+app.put('/api/middlewares/:line', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = updateSnippet(content, { ...req.body, line: req.params.line });
@@ -292,7 +387,7 @@ app.put('/api/middlewares/:line', auth, async (req, res) => {
 });
 
 
-app.delete('/api/middlewares/:line', auth, async (req, res) => {
+app.delete('/api/middlewares/:line', requireTrustedOrigin, auth, async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = deleteBlockAtLine(content, req.params.line);
@@ -308,7 +403,7 @@ app.get('/api/logs', auth, async (req, res) => {
   res.json({ logs: await collectLogs(settings, Number(req.query.lines || 200)) });
 });
 app.get('/api/settings', auth, async (_req, res) => { const settings = await loadSettings(); res.json({ settings: publicSettings(settings), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(settings) } }); });
-app.post('/api/settings', auth, async (req, res) => {
+app.post('/api/settings', requireTrustedOrigin, auth, async (req, res) => {
   const settings = await loadSettings();
   const { caddyfilePath, logPaths } = req.body || {};
   if (caddyfilePath && !fssync.existsSync(caddyfilePath)) return res.status(400).json({ error: 'Caddyfile path does not exist.' });

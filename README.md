@@ -53,3 +53,10 @@ caddyui.example.com {
 sudo rm -rf /var/lib/caddyui
 sudo systemctl restart caddyui
 ```
+
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/uninstall.sh | bash
+```
