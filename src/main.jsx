@@ -35,7 +35,7 @@ function AuthGate({ status, onReady }) {
   const needsLogin = status?.settings?.userConfigured && !status?.authenticated;
   const needsConfig = status?.settings?.userConfigured && status?.authenticated && !status?.settings?.caddyConfigured;
   const discovered = status?.discovered || { caddyfiles: [], logfiles: [] };
-  const [userForm, setUserForm] = useState({ username: 'admin', password: '', setupToken: '' });
+  const [userForm, setUserForm] = useState({ username: '', password: '', setupToken: '' });
   const [configForm, setConfigForm] = useState({ caddyfilePath: discovered.caddyfiles?.[0]?.path || '', logPaths: (discovered.logfiles || []).map(f => f.path).join('\n') });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
