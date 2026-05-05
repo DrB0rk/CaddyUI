@@ -35,14 +35,15 @@ function AuthGate({ status, onReady }) {
   const needsLogin = status?.settings?.userConfigured && !status?.authenticated;
   const needsConfig = status?.settings?.userConfigured && status?.authenticated && !status?.settings?.caddyConfigured;
   const discovered = status?.discovered || { caddyfiles: [], logfiles: [] };
-  const [userForm, setUserForm] = useState({ username: 'admin', password: '' });
+  const [userForm, setUserForm] = useState({ username: 'admin', password: '', setupToken: '' });
   const [configForm, setConfigForm] = useState({ caddyfilePath: discovered.caddyfiles?.[0]?.path || '', logPaths: (discovered.logfiles || []).map(f => f.path).join('\n') });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const submitUser = async (e) => { e.preventDefault(); setBusy(true); setError(''); try {
     const path = needsLogin ? '/api/login' : '/api/setup/user';
-    const data = await api(path, { method: 'POST', body: JSON.stringify(userForm) });
+    const payload = needsLogin ? { username: userForm.username, password: userForm.password } : userForm;
+    const data = await api(path, { method: 'POST', body: JSON.stringify(payload) });
     onReady(data);
   } catch (err) { setError(err.message); } finally { setBusy(false); } };
 
@@ -59,7 +60,7 @@ function AuthGate({ status, onReady }) {
     <button className="primary" disabled={busy}>{busy ? <Loader2 className="spin"/> : <FileCode2 size={16}/>}Save Caddy configuration</button></form></div>;
 
   return <div className="auth-page"><form className="auth-card" onSubmit={submitUser}><h1>CaddyUI</h1><p>{needsLogin ? 'Sign in to continue setup or manage your Caddyfile.' : 'First create the admin user. Caddy configuration is selected in the next step.'}</p>{error && <Notice type="error">{error}</Notice>}
-    <label>Username<input value={userForm.username} onChange={e => setUserForm({...userForm, username:e.target.value})}/></label><label>Password<input type="password" minLength={8} value={userForm.password} onChange={e => setUserForm({...userForm, password:e.target.value})}/></label>
+    <label>Username<input value={userForm.username} onChange={e => setUserForm({...userForm, username:e.target.value})}/></label><label>Password<input type="password" minLength={8} value={userForm.password} onChange={e => setUserForm({...userForm, password:e.target.value})}/></label>{!needsLogin && status?.settings?.setupTokenRequired && <label>Setup token<input value={userForm.setupToken} onChange={e => setUserForm({...userForm, setupToken:e.target.value})}/></label>}
     <button className="primary" disabled={busy}>{busy ? <Loader2 className="spin"/> : <KeyRound size={16}/>}{needsLogin ? 'Login' : 'Create admin account'}</button></form></div>;
 }
 

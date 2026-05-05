@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-5"
+SCRIPT_VERSION="2026.05.05-6"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-main}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -194,6 +194,7 @@ NODE_ENV=production
 CADDY_UI_PORT=$PORT
 CADDY_UI_DATA_DIR=$DATA_DIR
 CADDY_UI_SECRET=$SECRET
+CADDY_UI_SETUP_TOKEN=$SETUP_TOKEN_VALUE
 ENV
   chmod 600 "$INSTALL_DIR/.env" || true
   if [[ "$IS_ROOT" -eq 1 ]]; then chown "$RUN_USER":"$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true; fi
@@ -496,8 +497,10 @@ ok "Production build complete"
 step "Writing runtime configuration"
 if command -v openssl >/dev/null 2>&1; then
   SECRET="$(openssl rand -hex 32)"
+  SETUP_TOKEN_VALUE="$(openssl rand -hex 12)"
 else
   SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+  SETUP_TOKEN_VALUE="$(node -e 'console.log(require("crypto").randomBytes(12).toString("hex"))')"
 fi
 write_env
 ok "Runtime environment configured"

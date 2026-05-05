@@ -8,6 +8,7 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import { parseCaddyfile, appendSimpleProxy, updateSimpleProxy, appendSnippet, updateSnippet, deleteBlockAtLine } from './caddyParser.js';
@@ -25,6 +26,9 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
 const LOGIN_WINDOW_MS = Number(process.env.CADDY_UI_LOGIN_WINDOW_MS || 15 * 60 * 1000);
 const LOGIN_MAX_ATTEMPTS = Number(process.env.CADDY_UI_LOGIN_MAX_ATTEMPTS || 5);
+const SETUP_TOKEN = process.env.CADDY_UI_SETUP_TOKEN || '';
+const SESSION_PATH = path.join(DATA_DIR, 'sessions.json');
+const LOG_ROOTS = (process.env.CADDY_UI_LOG_ROOTS || ['/var/log/caddy','/data/caddy/logs','/config/log'].join(',')).split(',').map((x) => x.trim()).filter(Boolean);
 const COMMON_CADDYFILES = [
   path.join(ROOT, 'Caddyfile'),
   '/etc/caddy/Caddyfile',
@@ -55,6 +59,7 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 app.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
@@ -65,6 +70,50 @@ app.use((_req, res, next) => {
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true }); }
 
 function settingsFileMode() { return 0o600; }
+
+function setupTokenRequired(settings) {
+  return IS_PRODUCTION && !settings.user && Boolean(SETUP_TOKEN);
+}
+async function loadSessionState() {
+  await ensureDataDir();
+  try { return JSON.parse(await fs.readFile(SESSION_PATH, 'utf8')); }
+  catch { return { revoked: {} }; }
+}
+async function saveSessionState(state) {
+  await ensureDataDir();
+  await fs.writeFile(SESSION_PATH, JSON.stringify(state, null, 2), { mode: settingsFileMode() });
+  try { await fs.chmod(SESSION_PATH, settingsFileMode()); } catch {}
+}
+function pruneRevoked(state) {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [jti, exp] of Object.entries(state.revoked || {})) {
+    if (!exp || exp <= now) delete state.revoked[jti];
+  }
+  return state;
+}
+async function tokenRevoked(jti) {
+  if (!jti) return false;
+  const state = pruneRevoked(await loadSessionState());
+  return Boolean(state.revoked?.[jti]);
+}
+async function revokeToken(decoded) {
+  if (!decoded?.jti || !decoded?.exp) return;
+  const state = pruneRevoked(await loadSessionState());
+  state.revoked[decoded.jti] = decoded.exp;
+  await saveSessionState(state);
+}
+async function allowedLogPath(filePath) {
+  try {
+    const resolved = await fs.realpath(filePath);
+    for (const root of LOG_ROOTS) {
+      try {
+        const base = await fs.realpath(root);
+        if (resolved === base || resolved.startsWith(`${base}${path.sep}`)) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
 
 function requestProto(req) {
   return req.headers['x-forwarded-proto']?.toString().split(',')[0].trim().toLowerCase() || (req.secure ? 'https' : 'http');
@@ -140,18 +189,22 @@ async function saveSettings(settings) {
 const publicSettings = (s) => ({ userConfigured: Boolean(s.user), caddyConfigured: Boolean(s.configured && s.caddyfilePath), configured: Boolean(s.configured && s.user && s.caddyfilePath), caddyfilePath: s.caddyfilePath || '', logPaths: s.logPaths || COMMON_LOGS, username: s.user?.username || '' });
 
 function statusSettings(settings, authenticated) {
-  const base = { userConfigured: Boolean(settings.user), caddyConfigured: Boolean(settings.configured && settings.caddyfilePath), configured: Boolean(settings.configured && settings.user && settings.caddyfilePath), username: authenticated ? settings.user?.username || '' : '' };
+  const base = { userConfigured: Boolean(settings.user), caddyConfigured: Boolean(settings.configured && settings.caddyfilePath), configured: Boolean(settings.configured && settings.user && settings.caddyfilePath), setupTokenRequired: setupTokenRequired(settings), username: authenticated ? settings.user?.username || '' : '' };
   if (!authenticated) return { ...base, caddyfilePath: '', logPaths: [] };
   return { ...base, caddyfilePath: settings.caddyfilePath || '', logPaths: settings.logPaths || COMMON_LOGS };
 }
 
 
-function sign(username) { return jwt.sign({ username }, JWT_SECRET, { expiresIn: '12h' }); }
-function auth(req, res, next) {
+function sign(username) { return jwt.sign({ username, jti: randomUUID() }, JWT_SECRET, { expiresIn: '4h' }); }
+async function auth(req, res, next) {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Session expired' }); }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (await tokenRevoked(decoded.jti)) return res.status(401).json({ error: 'Session expired' });
+    req.user = decoded;
+    next();
+  } catch { res.status(401).json({ error: 'Session expired' }); }
 }
 function run(command, args, options = {}) {
   return new Promise((resolve) => {
@@ -223,7 +276,9 @@ async function checkProxyHealth(parsed) {
 }
 
 async function collectLogs(settings, lines = 200) {
-  const paths = [...new Set([...(settings.logPaths || []), ...COMMON_LOGS])].filter(Boolean);
+  const rawPaths = [...new Set([...(settings.logPaths || []), ...COMMON_LOGS])].filter(Boolean);
+  const paths = [];
+  for (const candidate of rawPaths) { if (await allowedLogPath(candidate)) paths.push(candidate); }
   const entries = [];
   for (const logPath of paths) {
     try {
@@ -246,7 +301,8 @@ app.get('/api/status', async (req, res) => {
 app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req, res) => {
   const settings = await loadSettings();
   if (settings.user) return res.status(409).json({ error: 'Admin user is already configured.' });
-  const { username, password } = req.body || {};
+  const { username, password, setupToken } = req.body || {};
+  if (setupTokenRequired(settings) && setupToken !== SETUP_TOKEN) return res.status(403).json({ error: 'Invalid setup token.' });
   if (!username || !password || password.length < 8) return res.status(400).json({ error: 'Username and a password of at least 8 characters are required.' });
   const passwordHash = await bcrypt.hash(password, 12);
   const next = { ...settings, configured: false, user: { username, passwordHash } };
@@ -258,18 +314,23 @@ app.post('/api/setup/config', requireTrustedOrigin, auth, async (req, res) => {
   const settings = await loadSettings();
   const { caddyfilePath, logPaths = [] } = req.body || {};
   if (!caddyfilePath || !fssync.existsSync(caddyfilePath)) return res.status(400).json({ error: 'A readable Caddyfile path is required.' });
-  const next = { ...settings, configured: true, caddyfilePath, logPaths: [...new Set([...logPaths, ...COMMON_LOGS].filter(Boolean))] };
+  const allowedLogs = [];
+  for (const candidate of [...new Set([...logPaths, ...COMMON_LOGS].filter(Boolean))]) { if (await allowedLogPath(candidate)) allowedLogs.push(candidate); }
+  const next = { ...settings, configured: true, caddyfilePath, logPaths: allowedLogs };
   await saveSettings(next);
   res.json({ settings: publicSettings(next), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) } });
 });
 app.post('/api/onboard', requireTrustedOrigin, requireSetupOrigin, async (req, res) => {
   const settings = await loadSettings();
   if (settings.configured && settings.user) return res.status(409).json({ error: 'CaddyUI is already configured.' });
-  const { username, password, caddyfilePath, logPaths = [] } = req.body || {};
+  const { username, password, caddyfilePath, logPaths = [], setupToken } = req.body || {};
+  if (setupTokenRequired(settings) && setupToken !== SETUP_TOKEN) return res.status(403).json({ error: 'Invalid setup token.' });
   if (!username || !password || password.length < 8) return res.status(400).json({ error: 'Username and a password of at least 8 characters are required.' });
   if (!caddyfilePath || !fssync.existsSync(caddyfilePath)) return res.status(400).json({ error: 'A readable Caddyfile path is required.' });
   const passwordHash = await bcrypt.hash(password, 12);
-  const next = { configured: true, caddyfilePath, logPaths: [...new Set([...logPaths, ...COMMON_LOGS].filter(Boolean))], user: { username, passwordHash } };
+  const allowedLogs = [];
+  for (const candidate of [...new Set([...logPaths, ...COMMON_LOGS].filter(Boolean))]) { if (await allowedLogPath(candidate)) allowedLogs.push(candidate); }
+  const next = { configured: true, caddyfilePath, logPaths: allowedLogs, user: { username, passwordHash } };
   await saveSettings(next);
   res.cookie(COOKIE_NAME, sign(username), cookieOptions(req));
   res.json({ settings: publicSettings(next), discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) } });
@@ -287,7 +348,12 @@ app.post('/api/login', requireTrustedOrigin, async (req, res) => {
   res.cookie(COOKIE_NAME, sign(username), cookieOptions(req));
   res.json({ settings: publicSettings(settings) });
 });
-app.post('/api/logout', requireTrustedOrigin, (req, res) => { res.clearCookie(COOKIE_NAME, cookieOptions(req)); res.json({ ok: true }); });
+app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
+  const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (token) { try { await revokeToken(jwt.verify(token, JWT_SECRET)); } catch {} }
+  res.clearCookie(COOKIE_NAME, cookieOptions(req));
+  res.json({ ok: true });
+});
 app.get('/api/config', auth, async (_req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
@@ -412,7 +478,9 @@ app.post('/api/settings', requireTrustedOrigin, auth, async (req, res) => {
   const settings = await loadSettings();
   const { caddyfilePath, logPaths } = req.body || {};
   if (caddyfilePath && !fssync.existsSync(caddyfilePath)) return res.status(400).json({ error: 'Caddyfile path does not exist.' });
-  const next = { ...settings, caddyfilePath: caddyfilePath || settings.caddyfilePath, logPaths: Array.isArray(logPaths) ? logPaths.filter(Boolean) : settings.logPaths };
+  const nextLogPaths = [];
+  for (const candidate of (Array.isArray(logPaths) ? logPaths.filter(Boolean) : settings.logPaths)) { if (await allowedLogPath(candidate)) nextLogPaths.push(candidate); }
+  const next = { ...settings, caddyfilePath: caddyfilePath || settings.caddyfilePath, logPaths: nextLogPaths };
   await saveSettings(next);
   res.json({ settings: publicSettings(next) });
 });
