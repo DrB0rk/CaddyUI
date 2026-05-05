@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-3"
+SCRIPT_VERSION="2026.05.05-4"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-main}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -25,6 +25,9 @@ INSTALL_LOG="$LOG_DIR/install.log"
 APP_LOG="$LOG_DIR/caddyui.log"
 SERVICE_NAME="caddyui"
 DRY_RUN="${CADDYUI_DRY_RUN:-0}"
+PENDING_CADDY_RELOAD=0
+PENDING_PROXY_HOST=""
+PENDING_CADDYFILE=""
 
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -290,21 +293,11 @@ find_caddyfiles() {
 }
 extract_domains() {
   local file="$1"
-  awk '
-    /^[^[:space:]#][^{]*\{[[:space:]]*$/ {
-      line=$0
-      sub(/#.*/, "", line)
-      sub(/\{[[:space:]]*$/, "", line)
-      gsub(/,/, " ", line)
-      n=split(line, parts, /[[:space:]]+/)
-      for (i=1; i<=n; i++) {
-        host=parts[i]
-        gsub(/^https?:\/\//, "", host)
-        sub(/:.*/, "", host)
-        if (host ~ /^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/ && host !~ /^\(/) print host
-      }
-    }
-  ' "$file"
+  sed -nE 's/^[[:space:]]*([^#][^{]*)\{[[:space:]]*$/\1/p' "$file" \
+    | tr ',' '\n' \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s#^https?://##; s/:.*$//' \
+    | grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' \
+    | awk 'NF && $0 !~ /^\\(/ && !seen[$0]++'
 }
 base_domain() {
   local host="$1"
@@ -427,13 +420,29 @@ $host {
       warn "Caddy validation failed. Restored backup."
       return 0
     fi
-    if caddy reload --config "$file" --adapter caddyfile >> "$INSTALL_LOG" 2>&1; then
-      ok "Caddy reverse proxy added: https://$host"
-    else
-      warn "Proxy added, but Caddy reload failed. Reload Caddy manually."
-    fi
+    PENDING_CADDY_RELOAD=1
+    PENDING_PROXY_HOST="$host"
+    PENDING_CADDYFILE="$file"
+    ok "Caddy reverse proxy added: https://$host"
   else
     ok "Caddy reverse proxy added: $host"
+  fi
+}
+
+prompt_caddy_reload() {
+  [[ "$PENDING_CADDY_RELOAD" -eq 1 ]] || return 0
+  if ! has_cmd caddy; then
+    warn "Reload Caddy manually to activate $PENDING_PROXY_HOST."
+    return 0
+  fi
+  if confirm "Reload Caddy now?" yes; then
+    if caddy reload --config "$PENDING_CADDYFILE" --adapter caddyfile >> "$INSTALL_LOG" 2>&1; then
+      ok "Caddy reloaded"
+    else
+      warn "Caddy reload failed. Reload it manually."
+    fi
+  else
+    warn "Reload Caddy manually to activate $PENDING_PROXY_HOST."
   fi
 }
 
@@ -509,6 +518,7 @@ else
 fi
 wait_for_app
 setup_caddy_proxy
+prompt_caddy_reload
 
 IP="$(primary_ip)"
 URL="http://$IP:$PORT"
