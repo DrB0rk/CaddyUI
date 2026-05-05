@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-1"
+SCRIPT_VERSION="2026.05.05-2"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-main}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -313,9 +313,19 @@ base_domain() {
 choose_proxy_target() {
   local files=()
   local options=()
-  local file host domain answer index subdomain manual_domain
+  local file host domain answer index subdomain manual_domain explicit_domain
   mapfile -t files < <(find_caddyfiles)
-  [[ "${#files[@]}" -gt 0 ]] || return 1
+  if [[ "${#files[@]}" -eq 0 ]]; then
+    warn "No readable Caddyfile found for reverse proxy setup."
+    return 1
+  fi
+  if [[ -n "${CADDYUI_PROXY_DOMAIN:-}" ]]; then
+    explicit_domain="${CADDYUI_PROXY_DOMAIN}"
+    valid_domain "$explicit_domain" || return 1
+    subdomain="${CADDYUI_PROXY_SUBDOMAIN:-caddyui}"
+    echo "${files[0]}|${explicit_domain}|$subdomain"
+    return 0
+  fi
   for file in "${files[@]}"; do
     while read -r host; do
       [[ -n "$host" ]] || continue
@@ -323,7 +333,10 @@ choose_proxy_target() {
       [[ -n "$domain" ]] && options+=("$file|$domain")
     done < <(extract_domains "$file")
   done
-  [[ "${#options[@]}" -gt 0 ]] || return 1
+  if [[ "${#options[@]}" -eq 0 ]]; then
+    warn "No domains found in detected Caddyfiles for reverse proxy setup."
+    return 1
+  fi
   mapfile -t options < <(printf '%s\n' "${options[@]}" | awk 'NF && !seen[$0]++')
   printf "%b\n" "${BLUE}▶${NC} ${BOLD}Caddy reverse proxy${NC}" >&2
   printf 'Detected Caddyfiles:\n' >&2
