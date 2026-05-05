@@ -1,0 +1,60 @@
+(security_headers) {
+    header {
+        X-Frame-Options DENY
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}
+
+(pass_host) {
+    header_up Host {host}
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Forwarded-For {remote_host}
+}
+
+(auth_forward) {
+    forward_auth http://auth.internal:9091 {
+        uri /api/authz/forward-auth
+        copy_headers Remote-User Remote-Groups Remote-Email
+    }
+}
+
+(example_tls) {
+    tls internal
+}
+
+app.example.test {
+    import security_headers
+    import pass_host
+    reverse_proxy http://10.10.0.10:3000
+}
+
+api.example.test {
+    import security_headers
+    reverse_proxy http://10.10.0.11:8080
+}
+
+admin.example.test {
+    import auth_forward
+    import security_headers
+    reverse_proxy http://10.10.0.12:9000
+}
+
+files.example.test {
+    import auth_forward
+    import pass_host
+    reverse_proxy http://10.10.0.13:8081
+}
+
+status.example.test {
+    respond "ok" 200
+}
+
+dev.internal.test {
+    import example_tls
+    reverse_proxy https://10.10.0.20:8443 {
+        transport http {
+            tls_insecure_skip_verify
+        }
+    }
+}

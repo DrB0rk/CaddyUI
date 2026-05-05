@@ -197,12 +197,37 @@ export function parseCaddyfile(source = '') {
   };
 }
 
+
+function proxyScopedSnippet(snippet) {
+  if (!snippet) return false;
+  const body = String(snippet.body || '');
+  const names = (snippet.directives || []).map((d) => d.name);
+  return names.some((name) => ['header_up', 'header_down', 'method', 'rewrite', 'uri', 'transport'].includes(name) || name.startsWith('lb_')) || /\bheader_up\b|\bheader_down\b|\btransport\b/.test(body);
+}
+function splitImportsByScope(source, imports = []) {
+  const parsed = parseCaddyfile(source);
+  const snippets = new Map((parsed.snippets || []).map((snippet) => [snippet.name, snippet]));
+  const siteImports = [];
+  const proxyImports = [];
+  for (const name of imports.filter(Boolean)) {
+    const snippet = snippets.get(name);
+    if (proxyScopedSnippet(snippet)) proxyImports.push(name);
+    else siteImports.push(name);
+  }
+  return { siteImports, proxyImports };
+}
+
 export function appendSimpleProxy(source, { host, upstream, imports = [] }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   if (!safeHost || !safeUpstream) throw new Error('Host and upstream are required.');
-  const importLines = imports.filter(Boolean).map((name) => `\timport ${name}`).join('\n');
-  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}\treverse_proxy ${safeUpstream}\n}\n`;
+  const { siteImports, proxyImports } = splitImportsByScope(source, imports);
+  const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
+  const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
+  const proxyLine = proxyImportLines
+    ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
+    : `\treverse_proxy ${safeUpstream}`;
+  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}${proxyLine}\n}\n`;
   return `${source.trimEnd()}\n\n${block}`;
 }
 
@@ -216,8 +241,13 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   const start = targetLine - 1;
   if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
   const end = findMatchingBrace(lines, start);
-  const importLines = imports.filter(Boolean).map((name) => `\timport ${name}`).join('\n');
-  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}\treverse_proxy ${safeUpstream}\n}`.split('\n');
+  const { siteImports, proxyImports } = splitImportsByScope(source, imports);
+  const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
+  const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
+  const proxyLine = proxyImportLines
+    ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
+    : `\treverse_proxy ${safeUpstream}`;
+  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}${proxyLine}\n}`.split('\n');
   lines.splice(start, end - start + 1, ...block);
   return lines.join('\n');
 }
