@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
+SCRIPT_CHANNEL="dev"
 SCRIPT_VERSION="0.1.1"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
-BRANCH="${CADDYUI_BRANCH:-main}"
+BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
 IS_ROOT=0
 [[ "${EUID:-$(id -u)}" -eq 0 ]] && IS_ROOT=1
@@ -103,6 +104,9 @@ need_cmd git
 need_cmd node
 need_cmd npm
 ok "Required tools are available"
+if [[ "$BRANCH" == "dev" ]]; then
+  warn "Development branch. Not stable."
+fi
 
 [[ -d "$INSTALL_DIR/.git" ]] || fail "No existing CaddyUI install found at $INSTALL_DIR"
 

@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
+SCRIPT_CHANNEL="dev"
 SCRIPT_VERSION="0.1.1"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
-BRANCH="${CADDYUI_BRANCH:-main}"
+BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 START_PORT="${CADDYUI_PORT:-8787}"
 PORT_SCAN_LIMIT="${CADDYUI_PORT_SCAN_LIMIT:-100}"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
@@ -453,6 +454,9 @@ mkdir -p "$LOG_DIR"
 step "Checking prerequisites"
 check_and_install_prerequisites
 ok "Required tools are available"
+if [[ "$BRANCH" == "dev" ]]; then
+  warn "Development branch. Not stable."
+fi
 
 if [[ -f "$INSTALL_DIR/.env" && -z "${CADDYUI_PORT:-}" ]]; then
   existing_port="$(awk -F= '$1=="CADDY_UI_PORT" {print $2}' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)"

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Editor from '@monaco-editor/react';
 import { AlertTriangle, CheckCircle2, FileCode2, KeyRound, Layers3, Loader2, Menu, RefreshCw, Save, ScrollText, ServerCog, Settings, Shield, SidebarClose, Wand2 } from 'lucide-react';
@@ -25,13 +25,14 @@ const pageItems = [
   ['settings', Settings, 'Settings'],
 ];
 function Notice({ type = 'info', children }) { return <div className={`notice ${type}`}>{type === 'error' ? <AlertTriangle size={18}/> : <CheckCircle2 size={18}/>}<span>{children}</span></div>; }
-function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme }) {
+function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate }) {
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><button className="icon-button" onClick={() => setCollapsed(!collapsed)}>{collapsed ? <Menu/> : <SidebarClose/>}</button><span className="logo">CaddyUI</span><span className="app-version">v{APP_VERSION}</span></div><div className="top-actions"><span className="pill"><Shield size={14}/>{user || 'admin'}</span><button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'}</button><button onClick={onLogout}>Logout</button></div></header>
-    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>{pageItems.map(([id, Icon, label]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20}/><span>{label}</span></button>)}</aside>
+    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}><div>{pageItems.map(([id, Icon, label]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20}/><span>{label}</span></button>)}</div><div className="sidebar-footer"><div className="sidebar-meta"><span className="sidebar-version">v{appInfo?.version || APP_VERSION}</span><span className={`sidebar-status ${appInfo?.updateAvailable ? 'update' : 'current'}`}>{appInfo?.updateAvailable ? 'Update available' : 'Current'}</span></div><div className="sidebar-actions"><button type="button" onClick={onCheckUpdates}>Check updates</button>{canUpdate && appInfo?.updateAvailable && <button type="button" className="primary" onClick={onRunUpdate}>Update now</button>}</div></div></aside>
     <main className={`content ${collapsed ? 'wide' : ''}`}>{children}</main>
   </div>;
 }
+
 function AuthGate({ status, onReady }) {
   const needsUser = !status?.settings?.userConfigured;
   const needsLogin = status?.settings?.userConfigured && !status?.authenticated;
@@ -107,44 +108,125 @@ const readBlockAtLine = (content, line) => {
 };
 
 function MiddlewarePicker({ snippets, value, onChange }) {
-  const selected = new Set(selectedImportNames({ imports: value }));
-  const toggle = (name) => {
-    const next = new Set(selected);
-    next.has(name) ? next.delete(name) : next.add(name);
-    onChange([...next].join(', '));
-  };
+  const selected = selectedImportNames({ imports: value });
   if (!snippets.length) return null;
-  return <details className="import-select"><summary>{selected.size ? `${selected.size} imports selected` : 'Select imports'}</summary><div className="import-options">{snippets.map(s => <label key={s.name} className={`import-option ${selected.has(s.name) ? 'selected' : ''}`}><input type="checkbox" checked={selected.has(s.name)} onChange={() => toggle(s.name)}/><span>{s.name}</span><small>{s.inferredType}</small></label>)}</div></details>;
+  return <label className="import-multiselect">Imports<select multiple value={selected} onChange={e => onChange([...e.target.selectedOptions].map(option => option.value).join(', '))}>{snippets.map(s => <option key={s.name} value={s.name}>{`${s.name} · ${s.inferredType}`}</option>)}</select></label>;
 }
+
 const StatusDot = ({ check }) => <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
-function Proxies({ config, refresh, setConfig }) {
+function Proxies({ config, refresh, setConfig, canEdit }) {
   const empty = { host: '', upstream: '', imports: '' };
-  const [form, setForm] = useState(empty); const [edit, setEdit] = useState(null); const [confirmDelete, setConfirmDelete] = useState(null); const [search, setSearch] = useState(''); const [result, setResult] = useState(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState(empty);
+  const [edit, setEdit] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [collapsedDomains, setCollapsedDomains] = useState({});
+  const [search, setSearch] = useState('');
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const sites = config?.parsed?.sites || [];
   const snippets = config?.parsed?.snippets || [];
   const query = search.trim().toLowerCase();
-  const filteredSites = query ? sites.filter(site => [site.addresses.join(' '), site.proxies.map(p=>p.upstreams.join(' ')).join(' '), site.imports.map(i=>i.name).join(' '), rootDomain(site.addresses?.[0]), `${site.line}-${site.endLine}`].join(' ').toLowerCase().includes(query)) : sites;
-  const groups = filteredSites.reduce((acc, site) => { const key = rootDomain(site.addresses?.[0]); (acc[key] ||= []).push(site); return acc; }, {});
-  const domains = [...new Set(sites.map(site => rootDomain(site.addresses?.[0])).filter(Boolean))].sort();
-  const applyLocal = (content) => setConfig({ path: config?.path || 'Caddyfile', content, parsed: parseCaddyfile(content) });
-  const add = async (e) => { e.preventDefault(); setBusy(true); setError(''); try { if(localTest){ const next = appendSimpleProxy(config.content, { host: form.host, upstream: form.upstream, imports: selectedImportNames(form) }); applyLocal(next); setForm(empty); return; } const data = await api('/api/proxies', { method: 'POST', body: JSON.stringify({ host: form.host, upstream: form.upstream, imports: selectedImportNames(form) })}); setConfig(c => ({...c, content:data.content, parsed:data.parsed})); setForm(empty); } catch(err){ setError(err.message); } finally{ setBusy(false); } };
-  const saveEdit = async (e) => { e.preventDefault(); if(!edit) return; setBusy(true); setError(''); try { if (edit.rawOpen) { const nextContent = replaceBlockAtLine(config.content, edit.line, edit.rawBlock); if(localTest){ applyLocal(nextContent); setEdit(null); return; } const data = await api('/api/config', { method:'POST', body:JSON.stringify({ content: nextContent, validate: true })}); setConfig(c=>({...c, content:nextContent, parsed:data.parsed})); setEdit(null); return; } if(localTest){ const nextContent = updateSimpleProxy(config.content, { siteLine: edit.line, host: edit.host, upstream: edit.upstream, imports: selectedImportNames(edit) }); applyLocal(nextContent); setEdit(null); return; } const data = await api(`/api/proxies/${edit.line}`, { method:'PUT', body:JSON.stringify({ host:edit.host, upstream:edit.upstream, imports:selectedImportNames(edit) })}); setConfig(c=>({...c, content:data.content, parsed:data.parsed})); setEdit(null); } catch(err){ setError(err.message); } finally{ setBusy(false); } };
-  const startEdit = (site) => { const names = [...site.imports, ...(site.proxies[0]?.imports || [])].map(i=>i.name); setEdit({ line: site.line, host: site.addresses[0] || '', upstream: site.proxies[0]?.upstreams?.join(' ') || '', imports: [...new Set(names)].join(', '), rawOpen: false, rawBlock: readBlockAtLine(config.content, site.line) }); };
-  const validateConfig = async () => { if(localTest){ setResult({ok:true, stdout:'Local test mode'}); return; } setBusy(true); setResult(null); try { setResult(await api('/api/config/validate', { method:'POST', body:JSON.stringify({content:config?.content || ''}) })); } catch(err){ setResult({ok:false, stderr:err.message}); } finally{ setBusy(false); } };
-  const reloadCaddy = async () => { if(localTest){ setResult({ok:true, stdout:'Local test mode'}); return; } setBusy(true); setResult(null); try { setResult(await api('/api/config/reload', { method:'POST' })); } catch(err){ setResult({ok:false, stderr:err.message}); } finally{ setBusy(false); } };
-  const deleteProxy = async (site) => { setBusy(true); setError(''); try { if(localTest){ const lines = config.content.replace(/\r\n/g, '\n').split('\n'); const start = site.line - 1; let depth = 0; let end = start; for(let i=start;i<lines.length;i++){ for(const ch of lines[i]){ if(ch==='{') depth++; if(ch==='}') depth--; } if(depth===0){ end=i; break; } } lines.splice(start, end - start + 1); applyLocal(lines.join('\n').replace(/\n{3,}/g, '\n\n')); return; } const data = await api(`/api/proxies/${site.line}`, { method:'DELETE' }); setConfig(c=>({...c, content:data.content, parsed:data.parsed})); } catch(err){ setError(err.message); } finally{ setBusy(false); setConfirmDelete(null); } };
-  return <section><div className="section-head"><div><h2>Proxies</h2><p>Grouped by domain.</p></div><button onClick={refresh}><RefreshCw size={16}/> Refresh</button></div><StatCards parsed={config?.parsed}/><div className="proxy-search"><input placeholder="Search proxies" value={search} onChange={e=>setSearch(e.target.value)}/><span>{filteredSites.length} shown</span></div>{error && <Notice type="error">{error}</Notice>}<form className="quick-add" onSubmit={add}><input list="proxy-domain-suggestions" placeholder="new.example.com" value={form.host} onChange={e=>setForm({...form,host:e.target.value})}/><datalist id="proxy-domain-suggestions">{domains.flatMap(domain => [`caddyui.${domain}`, `app.${domain}`, domain]).map(host => <option key={host} value={host}/>)}</datalist><input placeholder="http://10.0.0.10:3000" value={form.upstream} onChange={e=>setForm({...form,upstream:e.target.value})}/><button className="primary" disabled={busy}>{busy ? <Loader2 className="spin"/> : <Wand2 size={16}/>}Add proxy</button><MiddlewarePicker snippets={snippets} value={form.imports} onChange={imports=>setForm({...form,imports})}/></form>{edit && <div className="modal-backdrop" onMouseDown={()=>setEdit(null)}><form className="edit-modal" onSubmit={saveEdit} onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><h3>Edit proxy</h3><button type="button" onClick={()=>setEdit(null)}>Close</button></div><label>Host<input value={edit.host} onChange={e=>setEdit({...edit,host:e.target.value})}/></label><label>Upstream<input value={edit.upstream} onChange={e=>setEdit({...edit,upstream:e.target.value})}/></label><MiddlewarePicker snippets={snippets} value={edit.imports} onChange={imports=>setEdit({...edit,imports})}/><button type="button" className="expand-toggle" onClick={()=>setEdit({...edit, rawOpen: !edit.rawOpen, rawBlock: edit.rawBlock || readBlockAtLine(config.content, edit.line)})}>{edit.rawOpen ? 'Hide raw config' : 'Edit raw config'}</button>{edit.rawOpen && <label className="raw-proxy-editor">Proxy config<textarea rows="8" value={edit.rawBlock} onChange={e=>setEdit({...edit, rawBlock:e.target.value})}/></label>}<div className="toolbar"><button className="primary" disabled={busy}>Save</button><button type="button" onClick={()=>setEdit(null)}>Cancel</button></div></form></div>}<ConfirmModal confirm={confirmDelete} onCancel={()=>setConfirmDelete(null)} onConfirm={()=>confirmDelete?.action()}/><div className="proxy-list">{Object.entries(groups).sort(([a],[b]) => a.localeCompare(b)).map(([domain, items]) => <div className="proxy-group" key={domain}><div className="proxy-group-head"><h3>{domain}</h3><span>{items.length} entries</span></div><div className="proxy-table-head"><span>Host</span><span>Upstream</span><span>Local</span><span>Middlewares</span><span>Lines</span><span>Actions</span></div>{items.map(site => <div className="proxy-row" key={site.id}><div className="proxy-row-main"><span className="proxy-host">{site.addresses.join(', ')}</span><span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span><StatusDot check={config?.health?.[site.id]?.local}/><span className="proxy-mw">{[...site.imports.map(i=>i.name), ...(site.proxies[0]?.imports?.map(i=>i.name) || [])].join(', ') || 'none'}</span><span className="proxy-lines">{site.line}-{site.endLine}</span><div className="row-actions"><button type="button" onClick={()=>startEdit(site)}>Edit</button><button type="button" className="danger" onClick={(e)=>setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], ()=>deleteProxy(site)))}>Delete</button></div></div></div>)}</div>)}</div></section>;
+  const filteredSites = useMemo(() => query ? sites.filter(site => [site.addresses.join(' '), site.proxies.map(proxy => proxy.upstreams.join(' ')).join(' '), site.imports.map(i => i.name).join(' '), (site.proxies[0]?.imports || []).map(i => i.name).join(' '), rootDomain(site.addresses?.[0])].join(' ').toLowerCase().includes(query)) : sites, [query, sites]);
+  const groups = useMemo(() => filteredSites.reduce((acc, site) => { const key = rootDomain(site.addresses?.[0]); (acc[key] ||= []).push(site); return acc; }, {}), [filteredSites]);
+  const domains = useMemo(() => [...new Set(sites.map(site => rootDomain(site.addresses?.[0])).filter(Boolean))].sort(), [sites]);
+  const applyLocal = (content) => setConfig({ path: config?.path || 'Caddyfile', content, parsed: parseCaddyfile(content), health: config?.health || {} });
+  const add = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      if (localTest) {
+        applyLocal(appendSimpleProxy(config.content, { host: form.host, upstream: form.upstream, imports: selectedImportNames(form) }));
+        setForm(empty);
+        return;
+      }
+      const data = await api('/api/proxies', { method: 'POST', body: JSON.stringify({ host: form.host, upstream: form.upstream, imports: selectedImportNames(form) }) });
+      setConfig(current => ({ ...current, content: data.content, parsed: data.parsed, health: current.health }));
+      setForm(empty);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    if (!edit) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (edit.rawOpen) {
+        const nextContent = replaceBlockAtLine(config.content, edit.line, edit.rawBlock);
+        if (localTest) {
+          applyLocal(nextContent);
+          setEdit(null);
+          return;
+        }
+        const data = await api('/api/config', { method: 'POST', body: JSON.stringify({ content: nextContent, validate: true }) });
+        setConfig(current => ({ ...current, content: nextContent, parsed: data.parsed, health: current.health }));
+        setEdit(null);
+        return;
+      }
+      if (localTest) {
+        applyLocal(updateSimpleProxy(config.content, { siteLine: edit.line, host: edit.host, upstream: edit.upstream, imports: selectedImportNames(edit) }));
+        setEdit(null);
+        return;
+      }
+      const data = await api(`/api/proxies/${edit.line}`, { method: 'PUT', body: JSON.stringify({ host: edit.host, upstream: edit.upstream, imports: selectedImportNames(edit) }) });
+      setConfig(current => ({ ...current, content: data.content, parsed: data.parsed, health: current.health }));
+      setEdit(null);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+  const startEdit = (site) => {
+    const names = [...site.imports, ...(site.proxies[0]?.imports || [])].map(item => item.name);
+    setEdit({ line: site.line, host: site.addresses[0] || '', upstream: site.proxies[0]?.upstreams?.join(' ') || '', imports: [...new Set(names)].join(', '), rawOpen: false, rawBlock: readBlockAtLine(config.content, site.line) });
+  };
+  const validateConfig = async () => {
+    if (localTest) return setResult({ ok: true, stdout: 'Local test mode' });
+    setBusy(true);
+    setResult(null);
+    try { setResult(await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) })); }
+    catch (err) { setResult({ ok: false, stderr: err.message }); }
+    finally { setBusy(false); }
+  };
+  const reloadCaddy = async () => {
+    if (localTest) return setResult({ ok: true, stdout: 'Local test mode' });
+    setBusy(true);
+    setResult(null);
+    try { setResult(await api('/api/config/reload', { method: 'POST' })); }
+    catch (err) { setResult({ ok: false, stderr: err.message }); }
+    finally { setBusy(false); }
+  };
+  const deleteProxy = async (site) => {
+    setBusy(true);
+    setError('');
+    try {
+      if (localTest) {
+        const range = findBlockRange(config.content, site.line);
+        const lines = config.content.replace(/\r\n/g, '\n').split('\n');
+        if (range) lines.splice(range.start, range.end - range.start + 1);
+        applyLocal(lines.join('\n').replace(/\n{3,}/g, '\n\n'));
+        return;
+      }
+      const data = await api(`/api/proxies/${site.line}`, { method: 'DELETE' });
+      setConfig(current => ({ ...current, content: data.content, parsed: data.parsed, health: current.health }));
+    } catch (err) { setError(err.message); } finally { setBusy(false); setConfirmDelete(null); }
+  };
+  return <section><div className="section-head"><div><h2>Proxies</h2><p>Grouped by domain.</p></div><div className="toolbar"><button onClick={refresh}><RefreshCw size={16}/> Refresh</button>{canEdit && <><button onClick={validateConfig} disabled={busy}>Validate</button><button onClick={reloadCaddy} disabled={busy}>Reload</button></>}</div></div><StatCards parsed={config?.parsed}/>{result && <Notice type={result.ok ? 'success' : 'error'}>{result.ok ? (result.stdout || 'Command succeeded') : (result.stderr || 'Command failed')}</Notice>}<div className="proxy-search"><input placeholder="Search proxies" value={search} onChange={e => setSearch(e.target.value)}/><span>{filteredSites.length} shown</span></div>{error && <Notice type="error">{error}</Notice>}{canEdit && <form className="quick-add" onSubmit={add}><input list="proxy-domain-suggestions" placeholder="new.example.com" value={form.host} onChange={e => setForm({ ...form, host: e.target.value })}/><datalist id="proxy-domain-suggestions">{domains.flatMap(domain => [`caddyui.${domain}`, `app.${domain}`, domain]).map(host => <option key={host} value={host}/>)}</datalist><input placeholder="http://10.0.0.10:3000" value={form.upstream} onChange={e => setForm({ ...form, upstream: e.target.value })}/><button className="primary" disabled={busy}>{busy ? <Loader2 className="spin"/> : <Wand2 size={16}/>}Add proxy</button><MiddlewarePicker snippets={snippets} value={form.imports} onChange={imports => setForm({ ...form, imports })}/></form>}{edit && <div className="modal-backdrop" onMouseDown={() => setEdit(null)}><form className="edit-modal" onSubmit={saveEdit} onMouseDown={e => e.stopPropagation()}><div className="modal-head"><h3>Edit proxy</h3><button type="button" onClick={() => setEdit(null)}>Close</button></div><label>Host<input value={edit.host} onChange={e => setEdit({ ...edit, host: e.target.value })}/></label><label>Upstream<input value={edit.upstream} onChange={e => setEdit({ ...edit, upstream: e.target.value })}/></label><MiddlewarePicker snippets={snippets} value={edit.imports} onChange={imports => setEdit({ ...edit, imports })}/><button type="button" className="expand-toggle" onClick={() => setEdit({ ...edit, rawOpen: !edit.rawOpen, rawBlock: edit.rawBlock || readBlockAtLine(config.content, edit.line) })}>{edit.rawOpen ? 'Hide raw config' : 'Edit raw config'}</button>{edit.rawOpen && <div className="raw-proxy-editor"><Editor height="220px" defaultLanguage="caddyfile" theme={document.documentElement.dataset.theme === 'light' ? 'light' : 'vs-dark'} value={edit.rawBlock} onChange={value => setEdit({ ...edit, rawBlock: value || '' })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on', scrollBeyondLastLine: false }}/></div>}<div className="toolbar"><button className="primary" disabled={busy}>Save</button><button type="button" onClick={() => setEdit(null)}>Cancel</button></div></form></div>}<ConfirmModal confirm={confirmDelete} onCancel={() => setConfirmDelete(null)} onConfirm={() => confirmDelete?.action()}/><div className="proxy-list">{Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)).map(([domain, items]) => <details className="proxy-group" key={domain} open={!collapsedDomains[domain]} onToggle={e => setCollapsedDomains(current => ({ ...current, [domain]: !e.currentTarget.open }))}><summary className="proxy-group-head"><h3>{domain}</h3><span>{items.length} entries</span></summary><div className="proxy-table-head"><span>Host</span><span>Upstream</span><span>Local</span><span>Middlewares</span><span>Actions</span></div>{items.map(site => <div className="proxy-row" key={site.id}><div className="proxy-row-main"><span className="proxy-host">{site.addresses.join(', ')}</span><span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span><StatusDot check={config?.health?.[site.id]?.local}/><span className="proxy-mw">{[...site.imports.map(i => i.name), ...(site.proxies[0]?.imports?.map(i => i.name) || [])].join(', ') || 'none'}</span><div className="row-actions">{canEdit && <><button type="button" onClick={() => startEdit(site)}>Edit</button><button type="button" className="danger" onClick={e => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}>Delete</button></>}</div></div></div>)}</details>)}</div></section>;
 }
-function Middlewares({ config, setConfig }) {
+
+function Middlewares({ config, setConfig, canEdit }) {
   const snippets = config?.parsed?.snippets || [];
   const empty = { name: '', body: '' };
-  const [edit, setEdit] = useState(null); const [confirmDelete, setConfirmDelete] = useState(null); const [form, setForm] = useState(empty); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [form, setForm] = useState(empty);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const applyLocal = (content) => setConfig({ path: config?.path || 'Caddyfile', content, parsed: parseCaddyfile(content), health: config?.health || {} });
-  const add = async (e) => { e.preventDefault(); setBusy(true); setError(''); try { if(localTest){ applyLocal(`${config.content.trimEnd()}\n\n(${form.name}) {\n${form.body.split('\n').filter(Boolean).map(l=>`\t${l.trim()}`).join('\n')}\n}\n`); setForm(empty); return; } const data = await api('/api/middlewares', { method:'POST', body:JSON.stringify(form) }); setConfig(c=>({...c, content:data.content, parsed:data.parsed})); setForm(empty); } catch(err){ setError(err.message); } finally{ setBusy(false); } };
-  const save = async (e) => { e.preventDefault(); if(!edit) return; setBusy(true); setError(''); try { if(localTest){ const lines = config.content.replace(/\r\n/g, '\n').split('\n'); const start = edit.line - 1; let depth = 0; let end = start; for(let i=start;i<lines.length;i++){ for(const ch of lines[i]){ if(ch==='{') depth++; if(ch==='}') depth--; } if(depth===0){ end=i; break; } } const block = `(${edit.name}) {\n${edit.body.split('\n').filter(Boolean).map(l=>`\t${l.trim()}`).join('\n')}\n}`.split('\n'); lines.splice(start, end - start + 1, ...block); applyLocal(lines.join('\n')); setEdit(null); return; } const data = await api(`/api/middlewares/${edit.line}`, { method:'PUT', body:JSON.stringify(edit) }); setConfig(c=>({...c, content:data.content, parsed:data.parsed})); setEdit(null); } catch(err){ setError(err.message); } finally{ setBusy(false); } };
-  const deleteMiddleware = async (item) => { setBusy(true); setError(''); try { if(localTest){ const lines = config.content.replace(/\r\n/g, '\n').split('\n'); const start = item.line - 1; let depth = 0; let end = start; for(let i=start;i<lines.length;i++){ for(const ch of lines[i]){ if(ch==='{') depth++; if(ch==='}') depth--; } if(depth===0){ end=i; break; } } lines.splice(start, end - start + 1); applyLocal(lines.join('\n').replace(/\n{3,}/g, '\n\n')); return; } const data = await api(`/api/middlewares/${item.line}`, { method:'DELETE' }); setConfig(c=>({...c, content:data.content, parsed:data.parsed})); } catch(err){ setError(err.message); } finally{ setBusy(false); setConfirmDelete(null); } };
-  return <section><div className="section-head"><div><h2>Middlewares</h2><p>Snippets and imports.</p></div></div>{error && <Notice type="error">{error}</Notice>}<form className="middleware-form" onSubmit={add}><input placeholder="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><textarea rows="3" placeholder="directives" value={form.body} onChange={e=>setForm({...form,body:e.target.value})}/><button className="primary" disabled={busy}>Add middleware</button></form><div className="middleware-list">{snippets.map(s => <div className="middleware-row" key={s.name}><span className="proxy-host">({s.name})</span><span className="status-dot online">{s.inferredType}</span><span className="proxy-mw">{s.usedBy?.join(', ') || 'unused'}</span><span className="proxy-lines">{s.line}-{s.endLine}</span><div className="row-actions"><button type="button" onClick={()=>setEdit({ line:s.line, name:s.name, body:s.body })}>Edit</button><button type="button" className="danger" onClick={(e)=>setConfirmDelete(deleteConfirm(e, 'Delete middleware', s.name, ()=>deleteMiddleware(s)))}>Delete</button></div></div>)}</div>{edit && <div className="modal-backdrop" onMouseDown={()=>setEdit(null)}><form className="edit-modal" onSubmit={save} onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><h3>Edit middleware</h3><button type="button" onClick={()=>setEdit(null)}>Close</button></div><label>Name<input value={edit.name} onChange={e=>setEdit({...edit,name:e.target.value})}/></label><label>Directives<textarea rows="8" value={edit.body} onChange={e=>setEdit({...edit,body:e.target.value})}/></label><div className="toolbar"><button className="primary" disabled={busy}>Save</button><button type="button" onClick={()=>setEdit(null)}>Cancel</button></div></form></div>}<ConfirmModal confirm={confirmDelete} onCancel={()=>setConfirmDelete(null)} onConfirm={()=>confirmDelete?.action()}/></section>;
+  const add = async (e) => { e.preventDefault(); setBusy(true); setError(''); try { if (localTest) { applyLocal(`${config.content.trimEnd()}\n\n(${form.name}) {\n${form.body.split('\n').filter(Boolean).map(line => `\t${line.trim()}`).join('\n')}\n}\n`); setForm(empty); return; } const data = await api('/api/middlewares', { method: 'POST', body: JSON.stringify(form) }); setConfig(current => ({ ...current, content: data.content, parsed: data.parsed })); setForm(empty); } catch (err) { setError(err.message); } finally { setBusy(false); } };
+  const save = async (e) => { e.preventDefault(); if (!edit) return; setBusy(true); setError(''); try { if (localTest) { const range = findBlockRange(config.content, edit.line); const lines = config.content.replace(/\r\n/g, '\n').split('\n'); if (range) lines.splice(range.start, range.end - range.start + 1, ...`(${edit.name}) {\n${edit.body.split('\n').filter(Boolean).map(line => `\t${line.trim()}`).join('\n')}\n}`.split('\n')); applyLocal(lines.join('\n')); setEdit(null); return; } const data = await api(`/api/middlewares/${edit.line}`, { method: 'PUT', body: JSON.stringify(edit) }); setConfig(current => ({ ...current, content: data.content, parsed: data.parsed })); setEdit(null); } catch (err) { setError(err.message); } finally { setBusy(false); } };
+  const deleteMiddleware = async (item) => { setBusy(true); setError(''); try { if (localTest) { const range = findBlockRange(config.content, item.line); const lines = config.content.replace(/\r\n/g, '\n').split('\n'); if (range) lines.splice(range.start, range.end - range.start + 1); applyLocal(lines.join('\n').replace(/\n{3,}/g, '\n\n')); return; } const data = await api(`/api/middlewares/${item.line}`, { method: 'DELETE' }); setConfig(current => ({ ...current, content: data.content, parsed: data.parsed })); } catch (err) { setError(err.message); } finally { setBusy(false); setConfirmDelete(null); } };
+  return <section><div className="section-head"><div><h2>Middlewares</h2><p>Snippets and imports.</p></div></div>{error && <Notice type="error">{error}</Notice>}{canEdit && <form className="middleware-form" onSubmit={add}><input placeholder="name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/><div className="middleware-editor"><Editor height="180px" defaultLanguage="caddyfile" theme={document.documentElement.dataset.theme === 'light' ? 'light' : 'vs-dark'} value={form.body} onChange={value => setForm({ ...form, body: value || '' })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on', scrollBeyondLastLine: false }}/></div><button className="primary" disabled={busy}>Add middleware</button></form>}<div className="middleware-list">{snippets.map(snippet => <div className="middleware-row" key={snippet.name}><span className="proxy-host">({snippet.name})</span><span className="status-dot online">{snippet.inferredType}</span><span className="proxy-mw">{snippet.usedBy?.join(', ') || 'unused'}</span><div className="row-actions">{canEdit && <><button type="button" onClick={() => setEdit({ line: snippet.line, name: snippet.name, body: snippet.body })}>Edit</button><button type="button" className="danger" onClick={e => setConfirmDelete(deleteConfirm(e, 'Delete middleware', snippet.name, () => deleteMiddleware(snippet)))}>Delete</button></>}</div></div>)}</div>{edit && <div className="modal-backdrop" onMouseDown={() => setEdit(null)}><form className="edit-modal" onSubmit={save} onMouseDown={e => e.stopPropagation()}><div className="modal-head"><h3>Edit middleware</h3><button type="button" onClick={() => setEdit(null)}>Close</button></div><label>Name<input value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })}/></label><div className="middleware-editor"><Editor height="260px" defaultLanguage="caddyfile" theme={document.documentElement.dataset.theme === 'light' ? 'light' : 'vs-dark'} value={edit.body} onChange={value => setEdit({ ...edit, body: value || '' })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on', scrollBeyondLastLine: false }}/></div><div className="toolbar"><button className="primary" disabled={busy}>Save</button><button type="button" onClick={() => setEdit(null)}>Cancel</button></div></form></div>}<ConfirmModal confirm={confirmDelete} onCancel={() => setConfirmDelete(null)} onConfirm={() => confirmDelete?.action()}/></section>;
 }
+
 function Configuration({ config, setConfig, refresh }) {
   const [draft, setDraft] = useState(config?.content || ''); const [result, setResult] = useState(null); const [busy, setBusy] = useState(false);
   useEffect(()=>setDraft(config?.content || ''), [config?.content]);
