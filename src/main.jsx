@@ -1244,6 +1244,8 @@ function SettingsPage({ settings, setSettings, canEdit, canAdmin }) {
   const [form, setForm] = useState({ caddyfilePath: settings.caddyfilePath || '', logPaths: (settings.logPaths || []).join('\n') });
   const [msg, setMsg] = useState('');
   const [users, setUsers] = useState([]);
+  const [discovered, setDiscovered] = useState({ caddyfiles: [], logfiles: [] });
+  const [scanning, setScanning] = useState(false);
   const [userForm, setUserForm] = useState({ username: '', password: '', role: 'view' });
   const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '' });
 
@@ -1255,6 +1257,20 @@ function SettingsPage({ settings, setSettings, canEdit, canAdmin }) {
     if (!canAdmin || localTest) return;
     api('/api/users').then((res) => setUsers(res.users)).catch(() => {});
   }, [canAdmin]);
+
+  const scanFiles = async () => {
+    if (localTest) return;
+    setScanning(true);
+    setMsg('');
+    try {
+      const res = await api('/api/settings');
+      setDiscovered(res.discovered || { caddyfiles: [], logfiles: [] });
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const save = async (e) => {
     e.preventDefault();
@@ -1337,10 +1353,44 @@ function SettingsPage({ settings, setSettings, canEdit, canAdmin }) {
           Caddyfile path
           <input value={form.caddyfilePath} onChange={(e) => setForm({ ...form, caddyfilePath: e.target.value })} readOnly={!canEdit} />
         </label>
+        <div className="toolbar">
+          <button type="button" onClick={scanFiles} disabled={scanning}>
+            {scanning ? 'Scanning...' : 'Scan Caddyfiles'}
+          </button>
+          {discovered.caddyfiles.length > 0 && (
+            <select value="" onChange={(e) => e.target.value && setForm({ ...form, caddyfilePath: e.target.value })}>
+              <option value="">Select discovered Caddyfile</option>
+              {discovered.caddyfiles.map((f) => (
+                <option key={f.path} value={f.path}>{f.path}</option>
+              ))}
+            </select>
+          )}
+        </div>
         <label>
           Log paths
           <textarea rows="8" value={form.logPaths} onChange={(e) => setForm({ ...form, logPaths: e.target.value })} readOnly={!canEdit} />
         </label>
+        <div className="toolbar">
+          <button type="button" onClick={scanFiles} disabled={scanning}>
+            {scanning ? 'Scanning...' : 'Scan log files'}
+          </button>
+          {discovered.logfiles.length > 0 && (
+            <select
+              value=""
+              onChange={(e) => {
+                if (!e.target.value) return;
+                const lines = new Set(form.logPaths.split('\n').map((x) => x.trim()).filter(Boolean));
+                lines.add(e.target.value);
+                setForm({ ...form, logPaths: [...lines].join('\n') });
+              }}
+            >
+              <option value="">Add discovered log file</option>
+              {discovered.logfiles.map((f) => (
+                <option key={f.path} value={f.path}>{f.path}</option>
+              ))}
+            </select>
+          )}
+        </div>
         {canEdit && <button className="primary">Save settings</button>}
       </form>
 

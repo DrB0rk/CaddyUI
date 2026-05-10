@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
 SCRIPT_CHANNEL="dev"
-SCRIPT_VERSION="0.1.1"
+UPDATER_VERSION="2026.05.10-1"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
@@ -38,7 +38,7 @@ logo() {
                         /____/             
 ART
   printf "%b\n" "${NC}${BOLD}Updater${NC}"
-  printf "%b\n" "version ${SCRIPT_VERSION}\n"
+  printf "%b\n" "updater ${UPDATER_VERSION}\n"
 }
 
 step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
 SCRIPT_CHANNEL="dev"
-SCRIPT_VERSION="0.1.1"
+INSTALLER_VERSION="2026.05.10-1"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -43,7 +43,7 @@ logo() {
                         /____/             
 ART
   printf "%b\n" "${NC}${BOLD}Automated installer${NC}"
-  printf "%b\n" "version ${SCRIPT_VERSION}\n"
+  printf "%b\n" "installer ${INSTALLER_VERSION}\n"
 }
 
 step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }
@@ -448,6 +448,24 @@ prompt_caddy_reload() {
   fi
 }
 
+run_existing_update() {
+  local updater="$INSTALL_DIR/scripts/update.sh"
+  [[ -x "$updater" ]] || chmod +x "$updater" 2>/dev/null || true
+  if [[ ! -f "$updater" ]]; then
+    fail "Existing install found but updater script is missing: $updater"
+  fi
+  step "Existing installation detected"
+  ok "Using installer as updater"
+  CADDYUI_INSTALL_DIR="$INSTALL_DIR" \
+  CADDY_UI_DATA_DIR="$DATA_DIR" \
+  CADDYUI_LOG_DIR="$LOG_DIR" \
+  CADDYUI_BRANCH="$BRANCH" \
+  CADDYUI_DRY_RUN="$DRY_RUN" \
+  CADDYUI_ASSUME_YES="${CADDYUI_ASSUME_YES:-0}" \
+  bash "$updater"
+  exit 0
+}
+
 logo
 mkdir -p "$LOG_DIR"
 : > "$INSTALL_LOG"
@@ -458,6 +476,17 @@ if [[ "$BRANCH" == "dev" ]]; then
   warn "Development branch. Not stable."
 fi
 
+step "Preparing install directories"
+mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR"
+if [[ "$IS_ROOT" -eq 1 ]]; then
+  chown -R "$RUN_USER":"$RUN_USER" "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR" 2>/dev/null || true
+fi
+ok "Install directory: $INSTALL_DIR"
+
+if [[ -d "$INSTALL_DIR/.git" && "${CADDYUI_FORCE_INSTALL:-0}" != "1" ]]; then
+  run_existing_update
+fi
+
 if [[ -f "$INSTALL_DIR/.env" && -z "${CADDYUI_PORT:-}" ]]; then
   existing_port="$(awk -F= '$1=="CADDY_UI_PORT" {print $2}' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)"
   if [[ -n "$existing_port" ]]; then START_PORT="$existing_port"; fi
@@ -466,13 +495,6 @@ fi
 step "Selecting an available port"
 PORT="$(find_free_port)"
 ok "Selected port $PORT"
-
-step "Preparing install directories"
-mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR"
-if [[ "$IS_ROOT" -eq 1 ]]; then
-  chown -R "$RUN_USER":"$RUN_USER" "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR" 2>/dev/null || true
-fi
-ok "Install directory: $INSTALL_DIR"
 
 step "Downloading CaddyUI from GitHub"
 if [[ -d "$INSTALL_DIR/.git" ]]; then

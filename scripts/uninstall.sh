@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="0.1.1"
+UNINSTALLER_VERSION="2026.05.10-1"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
 IS_ROOT=0
 [[ "${EUID:-$(id -u)}" -eq 0 ]] && IS_ROOT=1
@@ -35,7 +35,7 @@ logo() {
                         /____/             
 ART
   printf "%b\n" "${NC}${BOLD}Uninstall${NC}"
-  printf "%b\n" "version ${SCRIPT_VERSION}\n"
+  printf "%b\n" "uninstaller ${UNINSTALLER_VERSION}\n"
 }
 
 step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }

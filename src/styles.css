@@ -101,7 +101,7 @@ select:focus {
   z-index: 5;
   height: 60px;
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  background: var(--surface);
   backdrop-filter: none;
   display: flex;
   align-items: center;
