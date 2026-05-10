@@ -438,6 +438,20 @@ const readBlockAtLine = (content, line) => {
   return range ? range.lines.slice(range.start, range.end + 1).join('\n') : '';
 };
 
+const previewProxyBlock = (content, draft) => {
+  try {
+    const next = updateSimpleProxy(content, {
+      siteLine: draft.line,
+      host: draft.host,
+      upstream: draft.upstream,
+      imports: selectedImportNames(draft.imports),
+    });
+    return readBlockAtLine(next, draft.line) || draft.rawBlock || '';
+  } catch {
+    return draft.rawBlock || '';
+  }
+};
+
 function MiddlewarePicker({ snippets, value, onChange }) {
   const selected = selectedImportNames(value);
   const [open, setOpen] = useState(false);
@@ -714,24 +728,51 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
             </div>
             <label>
               Host
-              <input value={edit.host} onChange={(e) => setEdit({ ...edit, host: e.target.value })} />
+              <input
+                value={edit.host}
+                onChange={(e) => {
+                  const next = { ...edit, host: e.target.value };
+                  if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                  setEdit(next);
+                }}
+              />
             </label>
             <label>
               Upstream
-              <input value={edit.upstream} onChange={(e) => setEdit({ ...edit, upstream: e.target.value })} />
+              <input
+                value={edit.upstream}
+                onChange={(e) => {
+                  const next = { ...edit, upstream: e.target.value };
+                  if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                  setEdit(next);
+                }}
+              />
             </label>
-            <MiddlewarePicker snippets={snippets} value={edit.imports} onChange={(imports) => setEdit({ ...edit, imports })} />
+            <MiddlewarePicker
+              snippets={snippets}
+              value={edit.imports}
+              onChange={(imports) => {
+                const next = { ...edit, imports };
+                if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                setEdit(next);
+              }}
+            />
             <button
               type="button"
               className="expand-toggle"
-              onClick={() => setEdit({ ...edit, rawOpen: !edit.rawOpen })}
+              onClick={() => {
+                const nextOpen = !edit.rawOpen;
+                const next = { ...edit, rawOpen: nextOpen };
+                if (nextOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                setEdit(next);
+              }}
             >
               {edit.rawOpen ? 'Hide raw config' : 'Edit raw config'}
             </button>
             {edit.rawOpen && (
               <div className="raw-proxy-editor">
                 <Editor
-                  height="220px"
+                  height="360px"
                   defaultLanguage="caddyfile"
                   theme={theme === 'light' ? 'light' : 'vs-dark'}
                   value={edit.rawBlock}

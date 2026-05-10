@@ -582,7 +582,7 @@ label {
 }
 
 .edit-modal {
-  width: min(740px, 100%);
+  width: min(980px, 100%);
   padding: 16px;
   display: grid;
   gap: 10px;
