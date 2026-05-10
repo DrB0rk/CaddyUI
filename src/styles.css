@@ -102,7 +102,7 @@ select:focus {
   height: 60px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(14px);
+  backdrop-filter: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -260,7 +260,7 @@ p {
   border: 1px solid var(--line);
   background: linear-gradient(180deg, var(--surface-2), var(--surface));
   border-radius: var(--radius-lg);
-  box-shadow: 0 16px 30px var(--shadow);
+  box-shadow: none;
 }
 
 .stats div {
@@ -447,6 +447,8 @@ label {
 
 .proxy-row {
   border-bottom: 1px solid var(--line);
+  content-visibility: auto;
+  contain-intrinsic-size: 44px;
 }
 
 .proxy-row:last-child {

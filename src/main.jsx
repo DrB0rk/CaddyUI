@@ -1429,14 +1429,6 @@ function App() {
       .catch((e) => setError(e.message));
   }, []);
 
-  useEffect(() => {
-    if (localTest || !settings?.configured || page !== 'proxies') return undefined;
-    const healthTimer = setInterval(() => {
-      refreshHealth();
-    }, 15000);
-    return () => clearInterval(healthTimer);
-  }, [localTest, settings?.configured, page]);
-
   if (!status) {
     return (
       <div className="loading">
