@@ -453,10 +453,6 @@ label {
   border-bottom: 0;
 }
 
-.proxy-rows-window {
-  overflow: auto;
-}
-
 .proxy-row-main {
   padding: 8px 14px;
   min-height: 44px;

@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { memo, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Editor from '@monaco-editor/react';
 import {
@@ -497,13 +497,35 @@ const StatusDot = ({ check }) => (
   </span>
 );
 
+const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete }) {
+  return (
+    <div className="proxy-row">
+      <div className="proxy-row-main">
+        <span className="proxy-host">{site.addresses.join(', ')}</span>
+        <span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
+        <StatusDot check={healthCheck} />
+        <span className="proxy-mw">
+          {[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}
+        </span>
+        <div className="row-actions">
+          {canEdit && (
+            <>
+              <button type="button" onClick={onEdit}>Edit</button>
+              <button type="button" className="danger" onClick={onDelete}>Delete</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
   const empty = { host: '', upstream: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [collapsedDomains, setCollapsedDomains] = useState({});
-  const [groupScroll, setGroupScroll] = useState({});
   const [search, setSearch] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
@@ -547,9 +569,6 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
     () => [...new Set(sites.map((site) => rootDomain(site.addresses?.[0])).filter(Boolean))].sort(),
     [sites]
   );
-  const rowHeight = 44;
-  const windowHeight = 420;
-  const overscan = 8;
 
   const applyLocal = (content) =>
     setConfig({
@@ -876,57 +895,18 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
                 <span>Middlewares</span>
                 <span>Actions</span>
               </div>
-              <div
-                className="proxy-rows-window"
-                style={{ maxHeight: `${windowHeight}px` }}
-                onScroll={(e) => {
-                  const top = e.currentTarget.scrollTop || 0;
-                  setGroupScroll((current) => (current[domain] === top ? current : { ...current, [domain]: top }));
-                }}
-              >
-                {(() => {
-                  const scrollTop = groupScroll[domain] || 0;
-                  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
-                  const end = Math.min(items.length, start + Math.ceil(windowHeight / rowHeight) + overscan * 2);
-                  const topPad = start * rowHeight;
-                  const bottomPad = Math.max(0, (items.length - end) * rowHeight);
-                  const visible = items.slice(start, end);
-                  return (
-                    <>
-                      {topPad > 0 && <div style={{ height: `${topPad}px` }} />}
-                      {visible.map((site) => (
-                        <div className="proxy-row" key={site.id}>
-                          <div className="proxy-row-main">
-                            <span className="proxy-host">{site.addresses.join(', ')}</span>
-                            <span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
-                            <StatusDot check={health?.[site.id]?.local} />
-                            <span className="proxy-mw">
-                              {[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}
-                            </span>
-                            <div className="row-actions">
-                              {canEdit && (
-                                <>
-                                  <button type="button" onClick={() => startEdit(site)}>Edit</button>
-                                  <button
-                                    type="button"
-                                    className="danger"
-                                    onClick={(e) =>
-                                      setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))
-                                    }
-                                  >
-                                    Delete
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                      {bottomPad > 0 && <div style={{ height: `${bottomPad}px` }} />}
-                    </>
-                  );
-                })()}
-              </div>
+              {items.map((site) => (
+                <ProxyRow
+                  key={site.id}
+                  site={site}
+                  healthCheck={health?.[site.id]?.local}
+                  canEdit={canEdit}
+                  onEdit={() => startEdit(site)}
+                  onDelete={(e) =>
+                    setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))
+                  }
+                />
+              ))}
             </details>
           ))}
       </div>
@@ -1450,12 +1430,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (localTest || !settings?.configured) return undefined;
+    if (localTest || !settings?.configured || page !== 'proxies') return undefined;
     const healthTimer = setInterval(() => {
       refreshHealth();
     }, 15000);
     return () => clearInterval(healthTimer);
-  }, [localTest, settings?.configured]);
+  }, [localTest, settings?.configured, page]);
 
   if (!status) {
     return (
