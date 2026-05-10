@@ -520,7 +520,7 @@ const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, on
   );
 });
 
-function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
+function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading }) {
   const empty = { host: '', upstream: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
@@ -530,6 +530,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [renderLimits, setRenderLimits] = useState({});
 
   const sites = config?.parsed?.sites || [];
   const snippets = config?.parsed?.snippets || [];
@@ -564,6 +565,28 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
       }, {}),
     [filteredSites]
   );
+  useEffect(() => {
+    const domainEntries = Object.entries(groups);
+    const initial = Object.fromEntries(domainEntries.map(([domain]) => [domain, 14]));
+    setRenderLimits(initial);
+    if (!domainEntries.length) return;
+    const timer = setInterval(() => {
+      setRenderLimits((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const [domain, items] of domainEntries) {
+          const cur = next[domain] || 0;
+          if (cur < items.length) {
+            next[domain] = Math.min(items.length, cur + 18);
+            changed = true;
+          }
+        }
+        if (!changed) clearInterval(timer);
+        return changed ? next : current;
+      });
+    }, 80);
+    return () => clearInterval(timer);
+  }, [groups]);
 
   const domains = useMemo(
     () => [...new Set(sites.map((site) => rootDomain(site.addresses?.[0])).filter(Boolean))].sort(),
@@ -720,6 +743,13 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
       </div>
 
       <StatCards parsed={config?.parsed} />
+      {loading && (
+        <div className="proxy-loading">
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /></div>
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /></div>
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /></div>
+        </div>
+      )}
       {result && <Notice type={result.ok ? 'success' : 'error'}>{result.ok ? result.stdout || 'Command succeeded' : result.stderr || 'Command failed'}</Notice>}
       <div className="proxy-search">
         <input placeholder="Search proxies" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -895,7 +925,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
                 <span>Middlewares</span>
                 <span>Actions</span>
               </div>
-              {items.map((site) => (
+              {items.slice(0, renderLimits[domain] || 0).map((site) => (
                 <ProxyRow
                   key={site.id}
                   site={site}
@@ -907,6 +937,15 @@ function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
                   }
                 />
               ))}
+              {(renderLimits[domain] || 0) < items.length && (
+                <div className="proxy-row-skeleton">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              )}
             </details>
           ))}
       </div>
@@ -1185,6 +1224,12 @@ function Logs() {
           <button onClick={load}>{busy ? <Loader2 className="spin" /> : <RefreshCw size={16} />}Refresh</button>
         </div>
       </div>
+      {busy && logs.length === 0 && (
+        <div className="proxy-loading">
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /></div>
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /></div>
+        </div>
+      )}
       {logs.map((l) => (
         <article className="log-card" key={l.source}>
           <h3>{l.source}</h3>
@@ -1363,6 +1408,7 @@ function App() {
   const [caddyBusy, setCaddyBusy] = useState(false);
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
   const [actionResult, setActionResult] = useState(null);
+  const [configLoading, setConfigLoading] = useState(false);
 
   const role = settings?.role || '';
   const canEdit = canEditRole(role) || localTest;
@@ -1379,12 +1425,15 @@ function App() {
   const refreshConfig = async () => {
     if (localTest) return;
     setError('');
+    setConfigLoading(true);
     try {
       const data = await api('/api/config');
       setConfig((current) => ({ ...current, ...data }));
       refreshHealth();
     } catch (e) {
       setError(e.message);
+    } finally {
+      setConfigLoading(false);
     }
   };
 
@@ -1552,7 +1601,7 @@ function App() {
     >
       {error && <Notice type="error">{error}</Notice>}
       {actionResult && <Notice type={actionResult.ok ? 'success' : 'error'}>{actionResult.message}</Notice>}
-      {page === 'proxies' && <Proxies config={config} refresh={refreshConfig} setConfig={setConfig} canEdit={canEdit} theme={theme} health={health} />}
+      {page === 'proxies' && <Proxies config={config} refresh={refreshConfig} setConfig={setConfig} canEdit={canEdit} theme={theme} health={health} loading={configLoading} />}
       {page === 'middlewares' && <Middlewares config={config} setConfig={setConfig} canEdit={canEdit} theme={theme} />}
       {page === 'configuration' && <Configuration config={config} setConfig={setConfig} refresh={refreshConfig} canEdit={canEdit} theme={theme} />}
       {page === 'logs' && <Logs />}
