@@ -217,6 +217,56 @@ function splitImportsByScope(source, imports = []) {
   return { siteImports, proxyImports };
 }
 
+function removeTopLevelImports(lines) {
+  const kept = [];
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = stripInlineComment(line).trim();
+    if (!(depth === 0 && trimmed.startsWith('import '))) kept.push(line);
+    for (const char of stripInlineComment(line)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return kept;
+}
+
+function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
+  const next = [];
+  let depth = 0;
+  let replaced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const clean = stripInlineComment(raw).trim();
+    if (!replaced && depth === 0 && clean.startsWith('reverse_proxy ')) {
+      const indent = raw.match(/^\s*/)?.[0] || '';
+      const hasBlock = clean.endsWith('{');
+      const parts = clean.replace(/\s*\{\s*$/, '').split(/\s+/);
+      const maybeMatcher = parts[1]?.startsWith('@') ? parts[1] : null;
+      const header = `${indent}reverse_proxy ${maybeMatcher ? `${maybeMatcher} ` : ''}${upstream}`;
+      if (hasBlock) {
+        const blockEnd = findMatchingBrace(lines, i);
+        const bodyLines = lines.slice(i + 1, blockEnd).filter((line) => !stripInlineComment(line).trim().startsWith('import '));
+        const proxyImportLines = proxyImports.map((name) => `${indent}\timport ${name}`);
+        next.push(`${header} {`, ...proxyImportLines, ...bodyLines, `${indent}}`);
+        i = blockEnd;
+      } else if (proxyImports.length) {
+        next.push(`${header} {`, ...proxyImports.map((name) => `${indent}\timport ${name}`), `${indent}}`);
+      } else {
+        next.push(header);
+      }
+      replaced = true;
+      continue;
+    }
+    next.push(raw);
+    for (const char of stripInlineComment(raw)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return next;
+}
+
 export function appendSimpleProxy(source, { host, upstream, imports = [] }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
@@ -242,12 +292,16 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
   const end = findMatchingBrace(lines, start);
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
-  const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
-  const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
-  const proxyLine = proxyImportLines
-    ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
-    : `\treverse_proxy ${safeUpstream}`;
-  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}${proxyLine}\n}`.split('\n');
+  const bodyLines = lines.slice(start + 1, end);
+  const cleanedBody = removeTopLevelImports(bodyLines);
+  const rewrittenBody = replaceFirstTopLevelReverseProxy(cleanedBody, safeUpstream, proxyImports);
+  const indent = bodyLines.find((line) => line.trim())?.match(/^\s*/)?.[0] || '\t';
+  const block = [
+    `${safeHost} {`,
+    ...siteImports.map((name) => `${indent}import ${name}`),
+    ...rewrittenBody,
+    '}',
+  ];
   lines.splice(start, end - start + 1, ...block);
   return lines.join('\n');
 }

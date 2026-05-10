@@ -125,6 +125,13 @@ textarea:focus {
     letter-spacing: -.02em
 }
 
+.app-version {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    padding-top: 2px
+}
+
 .pill {
     display: inline-flex;
     align-items: center;
@@ -952,4 +959,137 @@ section > .log-card:first-of-type {
 
 .middleware-picker button.selected span {
     border-left-color: var(--accent-line)
+}
+.expand-toggle {
+    justify-content: flex-start;
+    width: fit-content
+}
+
+.raw-proxy-editor {
+    grid-column: 1 / -1
+}
+
+.raw-proxy-editor textarea {
+    min-height: 180px;
+    font-family: "Cascadia Code", Consolas, monospace;
+    resize: vertical
+}
+.import-select {
+    grid-column: 1 / -1;
+    position: relative
+}
+
+.import-select summary {
+    list-style: none;
+    cursor: pointer;
+    border: 1px solid var(--line-strong);
+    background: var(--input);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 10px 11px;
+    min-height: 40px;
+    display: flex;
+    align-items: center
+}
+
+.import-select summary::-webkit-details-marker {
+    display: none
+}
+
+.import-options {
+    margin-top: 8px;
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border-radius: var(--radius);
+    padding: 8px;
+    display: grid;
+    gap: 6px;
+    max-height: 220px;
+    overflow: auto
+}
+
+.import-option {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface)
+}
+
+.import-option.selected {
+    border-color: var(--accent-line);
+    background: var(--accent-soft)
+}
+
+.import-option input {
+    width: 16px;
+    height: 16px;
+    margin: 0
+}
+
+.import-option small {
+    color: var(--muted)
+}
+
+.import-select {
+    grid-column: 1 / -1;
+    position: relative
+}
+
+.import-select summary {
+    list-style: none;
+    cursor: pointer;
+    border: 1px solid var(--line-strong);
+    background: var(--input);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 10px 11px;
+    min-height: 40px;
+    display: flex;
+    align-items: center
+}
+
+.import-select summary::-webkit-details-marker {
+    display: none
+}
+
+.import-options {
+    margin-top: 8px;
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border-radius: var(--radius);
+    padding: 8px;
+    display: grid;
+    gap: 6px;
+    max-height: 220px;
+    overflow: auto
+}
+
+.import-option {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface)
+}
+
+.import-option.selected {
+    border-color: var(--accent-line);
+    background: var(--accent-soft)
+}
+
+.import-option input {
+    width: 16px;
+    height: 16px;
+    margin: 0
+}
+
+.import-option small {
+    color: var(--muted)
 }

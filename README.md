@@ -60,3 +60,10 @@ sudo systemctl restart caddyui
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/uninstall.sh | bash
 ```
+
+
+## Update
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/update.sh | bash
+```

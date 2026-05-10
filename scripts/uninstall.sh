@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-7"
+SCRIPT_VERSION="0.1.1"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
 IS_ROOT=0
 [[ "${EUID:-$(id -u)}" -eq 0 ]] && IS_ROOT=1
