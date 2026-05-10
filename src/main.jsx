@@ -82,6 +82,10 @@ function Shell({
   canUpdate,
   checkingUpdates,
   updating,
+  canEdit,
+  onValidateCaddy,
+  onConfirmReloadCaddy,
+  caddyBusy,
 }) {
   return (
     <div className="app-shell">
@@ -98,6 +102,12 @@ function Shell({
             <Shield size={14} />
             {user || 'user'}
           </span>
+                    {canEdit && (
+            <>
+              <button onClick={onValidateCaddy} disabled={caddyBusy}>Validate</button>
+              <button onClick={onConfirmReloadCaddy} disabled={caddyBusy}>Reload Caddy</button>
+            </>
+          )}
           <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
             {theme === 'light' ? 'Dark' : 'Light'}
           </button>
@@ -326,6 +336,26 @@ function ConfirmModal({ confirm, onCancel, onConfirm }) {
   );
 }
 
+function ReloadConfirmModal({ open, busy, onCancel, onConfirm }) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onMouseDown={onCancel}>
+      <div className="edit-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>Reload Caddy</h3>
+        </div>
+        <p>Apply current configuration and reload now?</p>
+        <div className="toolbar">
+          <button className="primary" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Reloading...' : 'Reload'}
+          </button>
+          <button onClick={onCancel} disabled={busy}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const deleteConfirm = (event, title, message, action) => {
   const rect = event.currentTarget.getBoundingClientRect();
   return {
@@ -410,22 +440,35 @@ const readBlockAtLine = (content, line) => {
 
 function MiddlewarePicker({ snippets, value, onChange }) {
   const selected = selectedImportNames(value);
+  const [open, setOpen] = useState(false);
   if (!snippets.length) return null;
+  const toggle = (name) => {
+    const set = new Set(selected);
+    if (set.has(name)) set.delete(name);
+    else set.add(name);
+    onChange([...set].join(', '));
+  };
   return (
-    <label className="import-multiselect">
-      Imports
-      <select
-        multiple
-        value={selected}
-        onChange={(e) =>
-          onChange([...e.target.selectedOptions].map((option) => option.value).join(', '))
-        }
-      >
-        {snippets.map((s) => (
-          <option key={s.name} value={s.name}>{`${s.name} · ${s.inferredType}`}</option>
-        ))}
-      </select>
-    </label>
+    <div className="import-dropdown">
+      <button type="button" className="import-dropdown-trigger" onClick={() => setOpen((v) => !v)}>
+        {selected.length ? selected.length + ' selected' : 'Select imports'}
+      </button>
+      {open && (
+        <div className="import-dropdown-menu">
+          {snippets.map((s) => (
+            <label key={s.name} className="import-option">
+              <input
+                type="checkbox"
+                checked={selected.includes(s.name)}
+                onChange={() => toggle(s.name)}
+              />
+              <span>{s.name}</span>
+              <small>{s.inferredType}</small>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -589,31 +632,6 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
     });
   };
 
-  const validateConfig = async () => {
-    if (localTest) return setResult({ ok: true, stdout: 'Local test mode' });
-    setBusy(true);
-    setResult(null);
-    try {
-      setResult(await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) }));
-    } catch (err) {
-      setResult({ ok: false, stderr: err.message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const reloadCaddy = async () => {
-    if (localTest) return setResult({ ok: true, stdout: 'Local test mode' });
-    setBusy(true);
-    setResult(null);
-    try {
-      setResult(await api('/api/config/reload', { method: 'POST' }));
-    } catch (err) {
-      setResult({ ok: false, stderr: err.message });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const deleteProxy = async (site) => {
     setBusy(true);
@@ -647,12 +665,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
           <button onClick={refresh}>
             <RefreshCw size={16} /> Refresh
           </button>
-          {canEdit && (
-            <>
-              <button onClick={validateConfig} disabled={busy}>Validate</button>
-              <button onClick={reloadCaddy} disabled={busy}>Reload</button>
-            </>
-          )}
+          
         </div>
       </div>
 
@@ -970,22 +983,6 @@ function Configuration({ config, setConfig, refresh, canEdit, theme }) {
 
   useEffect(() => setDraft(config?.content || ''), [config?.content]);
 
-  const validate = async () => {
-    if (localTest) {
-      setResult({ ok: true, stdout: 'Local test mode' });
-      return;
-    }
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: draft }) });
-      setResult(r);
-    } catch (e) {
-      setResult({ ok: false, stderr: e.message });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const save = async () => {
     if (!canEdit) return;
@@ -1007,22 +1004,6 @@ function Configuration({ config, setConfig, refresh, canEdit, theme }) {
     }
   };
 
-  const reload = async () => {
-    if (!canEdit) return;
-    if (localTest) {
-      setResult({ ok: true, stdout: 'Local test mode' });
-      return;
-    }
-    setBusy(true);
-    setResult(null);
-    try {
-      setResult(await api('/api/config/reload', { method: 'POST' }));
-    } catch (e) {
-      setResult({ ok: false, stderr: e.message });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <section>
@@ -1033,14 +1014,12 @@ function Configuration({ config, setConfig, refresh, canEdit, theme }) {
         </div>
         <div className="toolbar">
           <button onClick={refresh}>Reload file</button>
-          <button onClick={validate} disabled={busy || !canEdit}>Validate</button>
           {canEdit && (
             <>
               <button className="primary" onClick={save} disabled={busy}>
                 <Save size={16} />
                 Save
               </button>
-              <button onClick={reload} disabled={busy}>Reload Caddy</button>
             </>
           )}
         </div>
@@ -1275,6 +1254,9 @@ function App() {
   const [appInfo, setAppInfo] = useState({ version: APP_VERSION, updateAvailable: false });
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [caddyBusy, setCaddyBusy] = useState(false);
+  const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
+  const [actionResult, setActionResult] = useState(null);
 
   const role = settings?.role || '';
   const canEdit = canEditRole(role) || localTest;
@@ -1378,6 +1360,44 @@ function App() {
     }
   };
 
+  const validateCaddyGlobal = async () => {
+    if (!canEdit) return;
+    if (localTest) {
+      setActionResult({ ok: true, message: 'Local test mode' });
+      return;
+    }
+    setCaddyBusy(true);
+    setError('');
+    try {
+      const result = await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) });
+      setActionResult({ ok: result.ok, message: result.ok ? (result.stdout || 'Validation passed') : (result.stderr || 'Validation failed') });
+    } catch (e) {
+      setActionResult({ ok: false, message: e.message });
+    } finally {
+      setCaddyBusy(false);
+    }
+  };
+
+  const reloadCaddyGlobal = async () => {
+    if (!canEdit) return;
+    if (localTest) {
+      setActionResult({ ok: true, message: 'Local test mode' });
+      setReloadConfirmOpen(false);
+      return;
+    }
+    setCaddyBusy(true);
+    setError('');
+    try {
+      const result = await api('/api/config/reload', { method: 'POST' });
+      setActionResult({ ok: result.ok, message: result.ok ? (result.stdout || 'Reloaded Caddy') : (result.stderr || 'Reload failed') });
+      setReloadConfirmOpen(false);
+    } catch (e) {
+      setActionResult({ ok: false, message: e.message });
+    } finally {
+      setCaddyBusy(false);
+    }
+  };
+
   const runUpdate = async () => {
     setUpdating(true);
     setError('');
@@ -1408,13 +1428,19 @@ function App() {
       canUpdate={canAdmin}
       checkingUpdates={checkingUpdates}
       updating={updating}
+      canEdit={canEdit}
+      onValidateCaddy={validateCaddyGlobal}
+      onConfirmReloadCaddy={() => setReloadConfirmOpen(true)}
+      caddyBusy={caddyBusy}
     >
       {error && <Notice type="error">{error}</Notice>}
+      {actionResult && <Notice type={actionResult.ok ? 'success' : 'error'}>{actionResult.message}</Notice>}
       {page === 'proxies' && <Proxies config={config} refresh={refreshConfig} setConfig={setConfig} canEdit={canEdit} theme={theme} />}
       {page === 'middlewares' && <Middlewares config={config} setConfig={setConfig} canEdit={canEdit} theme={theme} />}
       {page === 'configuration' && <Configuration config={config} setConfig={setConfig} refresh={refreshConfig} canEdit={canEdit} theme={theme} />}
       {page === 'logs' && <Logs />}
       {page === 'settings' && <SettingsPage settings={settings} setSettings={setSettings} canEdit={canEdit} canAdmin={canAdmin} />}
+      <ReloadConfirmModal open={reloadConfirmOpen} busy={caddyBusy} onCancel={() => setReloadConfirmOpen(false)} onConfirm={reloadCaddyGlobal} />
     </Shell>
   );
 }
