@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Editor from '@monaco-editor/react';
 import {
@@ -497,12 +497,13 @@ const StatusDot = ({ check }) => (
   </span>
 );
 
-function Proxies({ config, refresh, setConfig, canEdit, theme }) {
+function Proxies({ config, refresh, setConfig, canEdit, theme, health }) {
   const empty = { host: '', upstream: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [collapsedDomains, setCollapsedDomains] = useState({});
+  const [groupScroll, setGroupScroll] = useState({});
   const [search, setSearch] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
@@ -510,7 +511,8 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
 
   const sites = config?.parsed?.sites || [];
   const snippets = config?.parsed?.snippets || [];
-  const query = search.trim().toLowerCase();
+  const deferredSearch = useDeferredValue(search);
+  const query = deferredSearch.trim().toLowerCase();
 
   const filteredSites = useMemo(
     () =>
@@ -545,6 +547,9 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
     () => [...new Set(sites.map((site) => rootDomain(site.addresses?.[0])).filter(Boolean))].sort(),
     [sites]
   );
+  const rowHeight = 44;
+  const windowHeight = 420;
+  const overscan = 8;
 
   const applyLocal = (content) =>
     setConfig({
@@ -871,34 +876,57 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
                 <span>Middlewares</span>
                 <span>Actions</span>
               </div>
-              {items.map((site) => (
-                <div className="proxy-row" key={site.id}>
-                  <div className="proxy-row-main">
-                    <span className="proxy-host">{site.addresses.join(', ')}</span>
-                    <span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
-                    <StatusDot check={config?.health?.[site.id]?.local} />
-                    <span className="proxy-mw">
-                      {[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}
-                    </span>
-                    <div className="row-actions">
-                      {canEdit && (
-                        <>
-                          <button type="button" onClick={() => startEdit(site)}>Edit</button>
-                          <button
-                            type="button"
-                            className="danger"
-                            onClick={(e) =>
-                              setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))
-                            }
-                          >
-                            Delete
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
+              <div
+                className="proxy-rows-window"
+                style={{ maxHeight: `${windowHeight}px` }}
+                onScroll={(e) => {
+                  const top = e.currentTarget.scrollTop || 0;
+                  setGroupScroll((current) => (current[domain] === top ? current : { ...current, [domain]: top }));
+                }}
+              >
+                {(() => {
+                  const scrollTop = groupScroll[domain] || 0;
+                  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+                  const end = Math.min(items.length, start + Math.ceil(windowHeight / rowHeight) + overscan * 2);
+                  const topPad = start * rowHeight;
+                  const bottomPad = Math.max(0, (items.length - end) * rowHeight);
+                  const visible = items.slice(start, end);
+                  return (
+                    <>
+                      {topPad > 0 && <div style={{ height: `${topPad}px` }} />}
+                      {visible.map((site) => (
+                        <div className="proxy-row" key={site.id}>
+                          <div className="proxy-row-main">
+                            <span className="proxy-host">{site.addresses.join(', ')}</span>
+                            <span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
+                            <StatusDot check={health?.[site.id]?.local} />
+                            <span className="proxy-mw">
+                              {[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}
+                            </span>
+                            <div className="row-actions">
+                              {canEdit && (
+                                <>
+                                  <button type="button" onClick={() => startEdit(site)}>Edit</button>
+                                  <button
+                                    type="button"
+                                    className="danger"
+                                    onClick={(e) =>
+                                      setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))
+                                    }
+                                  >
+                                    Delete
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {bottomPad > 0 && <div style={{ height: `${bottomPad}px` }} />}
+                    </>
+                  );
+                })()}
+              </div>
             </details>
           ))}
       </div>
@@ -1344,6 +1372,7 @@ function App() {
   const [status, setStatus] = useState(localTest ? { settings: localSettings, authenticated: true, discovered: { caddyfiles: [], logfiles: [] } } : null);
   const [settings, setSettings] = useState(localTest ? localSettings : null);
   const [config, setConfig] = useState(localTest ? emptyConfig : null);
+  const [health, setHealth] = useState(localTest ? {} : {});
   const [page, setPage] = useState('proxies');
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('caddyui-theme') || 'dark');
@@ -1363,7 +1392,7 @@ function App() {
     if (localTest) return;
     try {
       const data = await api('/api/proxies/health');
-      setConfig((current) => (current ? { ...current, health: data.health || {} } : current));
+      setHealth(data.health || {});
     } catch {}
   };
 
@@ -1372,7 +1401,7 @@ function App() {
     setError('');
     try {
       const data = await api('/api/config');
-      setConfig((current) => ({ ...current, ...data, health: current?.health || {} }));
+      setConfig((current) => ({ ...current, ...data }));
       refreshHealth();
     } catch (e) {
       setError(e.message);
@@ -1403,6 +1432,7 @@ function App() {
           const parsed = parseCaddyfile(content);
           const health = Object.fromEntries(parsed.sites.map((site) => [site.id, { local: { online: false }, domain: { online: false } }]));
           setConfig({ path: 'Caddyfile', content, parsed, health });
+          setHealth(health);
         })
         .catch(() => {});
       return;
@@ -1550,7 +1580,7 @@ function App() {
     >
       {error && <Notice type="error">{error}</Notice>}
       {actionResult && <Notice type={actionResult.ok ? 'success' : 'error'}>{actionResult.message}</Notice>}
-      {page === 'proxies' && <Proxies config={config} refresh={refreshConfig} setConfig={setConfig} canEdit={canEdit} theme={theme} />}
+      {page === 'proxies' && <Proxies config={config} refresh={refreshConfig} setConfig={setConfig} canEdit={canEdit} theme={theme} health={health} />}
       {page === 'middlewares' && <Middlewares config={config} setConfig={setConfig} canEdit={canEdit} theme={theme} />}
       {page === 'configuration' && <Configuration config={config} setConfig={setConfig} refresh={refreshConfig} canEdit={canEdit} theme={theme} />}
       {page === 'logs' && <Logs />}
