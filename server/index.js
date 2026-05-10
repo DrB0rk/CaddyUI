@@ -649,11 +649,17 @@ app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/config', auth, requirePermission('view'), async (_req, res) => {
+app.get('/api/config', auth, requirePermission('view'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const parsed = parseCaddyfile(content);
-    res.json({ path: settings.caddyfilePath, content, parsed, health: await checkProxyHealth(parsed) });
+    const includeHealth = String(req.query.health || '0') === '1';
+    res.json({
+      path: settings.caddyfilePath,
+      content,
+      parsed,
+      health: includeHealth ? await checkProxyHealth(parsed) : {},
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -720,7 +726,8 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
+    const parsed = parseCaddyfile(next);
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -735,7 +742,8 @@ app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edi
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
+    const parsed = parseCaddyfile(next);
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -750,7 +758,8 @@ app.delete('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
+    const parsed = parseCaddyfile(next);
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

@@ -402,6 +402,10 @@ const selectedImportNames = (value) =>
     .split(',')
     .map((x) => x.trim())
     .filter(Boolean);
+const normalizeLogging = (logging = {}) => ({
+  mode: logging?.mode || 'none',
+  path: logging?.path || '',
+});
 
 const findBlockRange = (content, line) => {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
@@ -445,6 +449,7 @@ const previewProxyBlock = (content, draft) => {
       host: draft.host,
       upstream: draft.upstream,
       imports: selectedImportNames(draft.imports),
+      logging: { mode: draft.logMode, path: draft.logPath },
     });
     return readBlockAtLine(next, draft.line) || draft.rawBlock || '';
   } catch {
@@ -493,7 +498,7 @@ const StatusDot = ({ check }) => (
 );
 
 function Proxies({ config, refresh, setConfig, canEdit, theme }) {
-  const empty = { host: '', upstream: '', imports: '' };
+  const empty = { host: '', upstream: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -560,6 +565,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
             host: form.host,
             upstream: form.upstream,
             imports: selectedImportNames(form.imports),
+            logging: { mode: form.logMode, path: form.logPath },
           })
         );
         setForm(empty);
@@ -571,9 +577,10 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
           host: form.host,
           upstream: form.upstream,
           imports: selectedImportNames(form.imports),
+          logging: { mode: form.logMode, path: form.logPath },
         }),
       });
-      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: current.health }));
+      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
       setForm(empty);
     } catch (err) {
       setError(err.message);
@@ -599,7 +606,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
           method: 'POST',
           body: JSON.stringify({ content: nextContent, validate: true }),
         });
-        setConfig((current) => ({ ...current, content: nextContent, parsed: data.parsed, health: current.health }));
+        setConfig((current) => ({ ...current, content: nextContent, parsed: data.parsed, health: data.health || current.health }));
         setEdit(null);
         return;
       }
@@ -611,6 +618,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
             host: edit.host,
             upstream: edit.upstream,
             imports: selectedImportNames(edit.imports),
+            logging: { mode: edit.logMode, path: edit.logPath },
           })
         );
         setEdit(null);
@@ -623,9 +631,10 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
           host: edit.host,
           upstream: edit.upstream,
           imports: selectedImportNames(edit.imports),
+          logging: { mode: edit.logMode, path: edit.logPath },
         }),
       });
-      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: current.health }));
+      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
       setEdit(null);
     } catch (err) {
       setError(err.message);
@@ -636,11 +645,14 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
 
   const startEdit = (site) => {
     const names = [...site.imports, ...(site.proxies[0]?.imports || [])].map((item) => item.name);
+    const logging = normalizeLogging(site.logging);
     setEdit({
       line: site.line,
       host: site.addresses[0] || '',
       upstream: site.proxies[0]?.upstreams?.join(' ') || '',
       imports: [...new Set(names)].join(', '),
+      logMode: logging.mode,
+      logPath: logging.path,
       rawOpen: false,
       rawBlock: readBlockAtLine(config.content, site.line),
     });
@@ -659,7 +671,7 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
         return;
       }
       const data = await api(`/api/proxies/${site.line}`, { method: 'DELETE' });
-      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: current.health }));
+      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -711,6 +723,20 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
             value={form.upstream}
             onChange={(e) => setForm({ ...form, upstream: e.target.value })}
           />
+          <select value={form.logMode} onChange={(e) => setForm({ ...form, logMode: e.target.value })}>
+            <option value="none">No access log</option>
+            <option value="default">Default log</option>
+            <option value="stdout">Log to stdout</option>
+            <option value="stderr">Log to stderr</option>
+            <option value="file">Log to file</option>
+          </select>
+          {form.logMode === 'file' && (
+            <input
+              placeholder="/var/log/caddy/site.access.log"
+              value={form.logPath}
+              onChange={(e) => setForm({ ...form, logPath: e.target.value })}
+            />
+          )}
           <button className="primary" disabled={busy}>
             {busy ? <Loader2 className="spin" /> : <Wand2 size={16} />}
             Add proxy
@@ -748,6 +774,36 @@ function Proxies({ config, refresh, setConfig, canEdit, theme }) {
                 }}
               />
             </label>
+            <label>
+              Logging
+              <select
+                value={edit.logMode}
+                onChange={(e) => {
+                  const next = { ...edit, logMode: e.target.value };
+                  if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                  setEdit(next);
+                }}
+              >
+                <option value="none">No access log</option>
+                <option value="default">Default log</option>
+                <option value="stdout">Log to stdout</option>
+                <option value="stderr">Log to stderr</option>
+                <option value="file">Log to file</option>
+              </select>
+            </label>
+            {edit.logMode === 'file' && (
+              <label>
+                Log file
+                <input
+                  value={edit.logPath}
+                  onChange={(e) => {
+                    const next = { ...edit, logPath: e.target.value };
+                    if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                    setEdit(next);
+                  }}
+                />
+              </label>
+            )}
             <MiddlewarePicker
               snippets={snippets}
               value={edit.imports}
@@ -1303,11 +1359,21 @@ function App() {
   const canEdit = canEditRole(role) || localTest;
   const canAdmin = canAdminRole(role) || localTest;
 
+  const refreshHealth = async () => {
+    if (localTest) return;
+    try {
+      const data = await api('/api/proxies/health');
+      setConfig((current) => (current ? { ...current, health: data.health || {} } : current));
+    } catch {}
+  };
+
   const refreshConfig = async () => {
     if (localTest) return;
     setError('');
     try {
-      setConfig(await api('/api/config'));
+      const data = await api('/api/config');
+      setConfig((current) => ({ ...current, ...data, health: current?.health || {} }));
+      refreshHealth();
     } catch (e) {
       setError(e.message);
     }
@@ -1352,6 +1418,14 @@ function App() {
       })
       .catch((e) => setError(e.message));
   }, []);
+
+  useEffect(() => {
+    if (localTest || !settings?.configured) return undefined;
+    const healthTimer = setInterval(() => {
+      refreshHealth();
+    }, 15000);
+    return () => clearInterval(healthTimer);
+  }, [localTest, settings?.configured]);
 
   if (!status) {
     return (
