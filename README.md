@@ -2,7 +2,7 @@
 
 Web UI for managing a Caddy `Caddyfile`.
 
-CaddyUI shows reverse proxies, snippets, the raw config editor, validation, reload, and logs.
+CaddyUI includes proxy management, middleware/snippet management, Monaco editors, validation, reload, logs, user roles, and onboarding.
 
 ## Install
 
@@ -10,7 +10,10 @@ CaddyUI shows reverse proxies, snippets, the raw config editor, validation, relo
 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh | bash
 ```
 
-Open the URL printed by the installer. The installer can also add a Caddy reverse proxy entry for CaddyUI.
+Open the URL printed by the installer.
+
+`install.sh` is also used for updates.  
+If CaddyUI is already installed, running the same install command updates and restarts it.
 
 ## Requirements
 
@@ -24,22 +27,44 @@ Open the URL printed by the installer. The installer can also add a Caddy revers
 ## First run
 
 1. Create the admin user.
+2. Enter setup token if required.
 2. Select a detected Caddyfile or enter the path.
 3. Select detected log files or add paths manually.
 
 ## Pages
 
-- **Proxies**: reverse proxies and quick proxy creation
-- **Middlewares**: snippets and imports
-- **Configuration**: raw Caddyfile editor
-- **Logs**: Caddy logs
-- **Settings**: Caddyfile and log paths
+- **Proxies**
+  - grouped by domain
+  - add/edit/delete
+  - import multi-select
+  - per-site logging selector (`none`, `default`, `stdout`, `stderr`, `file`)
+  - quick search
+- **Middlewares**
+  - add/edit/delete snippets
+  - Monaco editor
+- **Configuration**
+  - raw Caddyfile Monaco editor
+- **Logs**
+  - log viewer with line selector
+- **Settings**
+  - Caddyfile/log path settings
+  - scan buttons for Caddyfiles and log files
+  - user management (admin)
+  - password change
 
-Edit flow: edit, validate, save, reload.
+## Roles
 
-CaddyUI creates a backup before saving.
+- `view`: read-only access
+- `edit`: config/proxy/middleware/settings edits
+- `admin`: full access, user management, in-app update
 
-## Reverse proxy
+## Validate and reload
+
+Global **Validate** and **Reload Caddy** buttons are in the top bar.
+
+CaddyUI creates a backup before saving config changes.
+
+## Reverse proxy example
 
 ```caddyfile
 caddyui.example.com {
@@ -61,9 +86,8 @@ sudo systemctl restart caddyui
 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/uninstall.sh | bash
 ```
 
-
-## Update
+## Force fresh install (skip auto-update mode)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/update.sh | bash
+CADDYUI_FORCE_INSTALL=1 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh | bash
 ```

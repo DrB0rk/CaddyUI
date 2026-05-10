@@ -43,6 +43,9 @@ const LOG_ROOTS = (process.env.CADDY_UI_LOG_ROOTS || ['/var/log/caddy', '/data/c
   .filter(Boolean);
 
 const ROLE_LEVEL = { view: 0, edit: 1, admin: 2 };
+const VALID_ROLES = new Set(['view', 'edit', 'admin']);
+const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,64}$/;
+const MAX_PASSWORD_LENGTH = 72;
 const ALLOWED_ORIGINS = new Set(
   (process.env.CADDY_UI_ALLOWED_ORIGINS || '')
     .split(',')
@@ -257,6 +260,19 @@ function requirePermission(required) {
 
 function setupTokenRequired(settings) {
   return IS_PRODUCTION && normalizeSettings(settings).users.length === 0 && Boolean(SETUP_TOKEN);
+}
+
+function validUsername(username) {
+  return USERNAME_PATTERN.test(String(username || '').trim());
+}
+
+function validPassword(password) {
+  const value = String(password || '');
+  return value.length >= 8 && value.length <= MAX_PASSWORD_LENGTH;
+}
+
+function adminCount(settings) {
+  return normalizeSettings(settings).users.filter((user) => user.role === 'admin').length;
 }
 
 async function loadSettings() {
@@ -587,8 +603,8 @@ app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req
   if (setupTokenRequired(settings) && setupToken !== SETUP_TOKEN) {
     return res.status(403).json({ error: 'Invalid setup token.' });
   }
-  if (!username || !password || password.length < 8) {
-    return res.status(400).json({ error: 'Username and a password of at least 8 characters are required.' });
+  if (!validUsername(username) || !validPassword(password)) {
+    return res.status(400).json({ error: `Username format is invalid or password must be 8-${MAX_PASSWORD_LENGTH} characters.` });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
@@ -624,10 +640,11 @@ app.post('/api/setup/config', requireTrustedOrigin, auth, requirePermission('edi
 app.post('/api/login', requireTrustedOrigin, async (req, res) => {
   const settings = await loadSettings();
   const { username, password } = req.body || {};
-  const rateKey = `${clientIp(req)}:${String(username || '')}`;
+  const normalizedUsername = String(username || '').trim();
+  const rateKey = `${clientIp(req)}:${normalizedUsername}`;
   if (tooManyAttempts(rateKey)) return res.status(429).json({ error: 'Too many login attempts.' });
 
-  const user = currentUserRecord(settings, username);
+  const user = currentUserRecord(settings, normalizedUsername);
   if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) {
     recordFailedAttempt(rateKey);
     return res.status(401).json({ error: 'Invalid username or password.' });
@@ -812,7 +829,9 @@ app.delete('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermissi
 
 app.get('/api/logs', auth, requirePermission('view'), async (req, res) => {
   const settings = await loadSettings();
-  res.json({ logs: await collectLogs(settings, Number(req.query.lines || 200)) });
+  const requested = Number(req.query.lines || 200);
+  const bounded = Number.isFinite(requested) ? Math.max(10, Math.min(2000, Math.floor(requested))) : 200;
+  res.json({ logs: await collectLogs(settings, bounded) });
 });
 
 app.get('/api/settings', auth, requirePermission('view'), async (req, res) => {
@@ -853,10 +872,10 @@ app.post('/api/users', requireTrustedOrigin, auth, requirePermission('admin'), a
   const settings = await loadSettings();
   const normalized = normalizeSettings(settings);
   const { username, password, role } = req.body || {};
-  if (!username || !password || String(password).length < 8) {
-    return res.status(400).json({ error: 'Username and password are required.' });
+  if (!validUsername(username) || !validPassword(password)) {
+    return res.status(400).json({ error: `Username format is invalid or password must be 8-${MAX_PASSWORD_LENGTH} characters.` });
   }
-  if (!['view', 'edit', 'admin'].includes(role)) {
+  if (!VALID_ROLES.has(role)) {
     return res.status(400).json({ error: 'Invalid role.' });
   }
   if (currentUserRecord(normalized, username)) {
@@ -879,14 +898,19 @@ app.put('/api/users/:username', requireTrustedOrigin, auth, requirePermission('a
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   const { role, password } = req.body || {};
-  if (role && !['view', 'edit', 'admin'].includes(role)) {
+  if (role && !VALID_ROLES.has(role)) {
     return res.status(400).json({ error: 'Invalid role.' });
   }
-  if (role) user.role = role;
+  if (role) {
+    if (user.role === 'admin' && role !== 'admin' && adminCount(normalized) <= 1) {
+      return res.status(400).json({ error: 'At least one admin user is required.' });
+    }
+    user.role = role;
+  }
 
   if (password) {
-    if (String(password).length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    if (!validPassword(password)) {
+      return res.status(400).json({ error: `Password must be 8-${MAX_PASSWORD_LENGTH} characters.` });
     }
     user.passwordHash = await bcrypt.hash(password, 12);
   }
@@ -900,6 +924,10 @@ app.delete('/api/users/:username', requireTrustedOrigin, auth, requirePermission
   const normalized = normalizeSettings(settings);
   if (req.user.username === req.params.username) {
     return res.status(400).json({ error: 'Cannot delete current user.' });
+  }
+  const target = currentUserRecord(normalized, req.params.username);
+  if (target?.role === 'admin' && adminCount(normalized) <= 1) {
+    return res.status(400).json({ error: 'At least one admin user is required.' });
   }
 
   normalized.users = normalized.users.filter((user) => user.username !== req.params.username);
@@ -915,8 +943,8 @@ app.post('/api/account/password', requireTrustedOrigin, auth, requirePermission(
   if (!user || !(await bcrypt.compare(currentPassword || '', user.passwordHash))) {
     return res.status(401).json({ error: 'Current password is invalid.' });
   }
-  if (!newPassword || String(newPassword).length < 8) {
-    return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+  if (!validPassword(newPassword)) {
+    return res.status(400).json({ error: `New password must be 8-${MAX_PASSWORD_LENGTH} characters.` });
   }
 
   user.passwordHash = await bcrypt.hash(newPassword, 12);
