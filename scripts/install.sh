@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_VERSION="2026.05.05-6"
+SCRIPT_CHANNEL="dev"
+INSTALLER_VERSION="2026.05.10-2"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
-BRANCH="${CADDYUI_BRANCH:-main}"
+BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 START_PORT="${CADDYUI_PORT:-8787}"
 PORT_SCAN_LIMIT="${CADDYUI_PORT_SCAN_LIMIT:-100}"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
@@ -42,7 +43,7 @@ logo() {
                         /____/             
 ART
   printf "%b\n" "${NC}${BOLD}Automated installer${NC}"
-  printf "%b\n" "version ${SCRIPT_VERSION}\n"
+  printf "%b\n" "installer ${INSTALLER_VERSION}\n"
 }
 
 step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }
@@ -447,12 +448,73 @@ prompt_caddy_reload() {
   fi
 }
 
+run_existing_update() {
+  step "Existing installation detected"
+  ok "Running in update mode"
+  step "Updating source"
+  run_quiet git -C "$INSTALL_DIR" fetch --quiet origin "$BRANCH"
+  run_quiet git -C "$INSTALL_DIR" checkout --quiet "$BRANCH"
+  run_quiet git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+  run_quiet git -C "$INSTALL_DIR" clean -fd
+  ok "Source updated"
+
+  step "Installing dependencies"
+  if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
+    run_quiet npm --prefix "$INSTALL_DIR" ci
+  else
+    run_quiet npm --prefix "$INSTALL_DIR" install
+  fi
+  ok "Dependencies installed"
+
+  step "Building web interface"
+  run_quiet npm --prefix "$INSTALL_DIR" run build
+  ok "Production build complete"
+
+  step "Restarting CaddyUI"
+  if systemd_available && { systemctl list-unit-files | grep -q "^${SERVICE_NAME}\.service" || [[ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]]; }; then
+    run_quiet systemctl daemon-reload
+    run_quiet systemctl restart "$SERVICE_NAME"
+    ok "Systemd service restarted"
+  else
+    start_with_nohup
+    ok "Background process restarted"
+  fi
+
+  if [[ -f "$INSTALL_DIR/.env" && -z "${CADDYUI_PORT:-}" ]]; then
+    existing_port="$(awk -F= '$1==\"CADDY_UI_PORT\" {print $2}' \"$INSTALL_DIR/.env\" 2>/dev/null | tail -1)"
+    [[ -n "$existing_port" ]] && PORT="$existing_port"
+  fi
+  PORT="${PORT:-$START_PORT}"
+  wait_for_app
+  IP="$(primary_ip)"
+  URL="http://$IP:$PORT"
+  printf "\n%b\n" "${GREEN}${BOLD}CaddyUI updated.${NC}"
+  printf "%b\n" "Open: ${BOLD}$URL${NC}"
+  printf "%b\n" "Install log: $INSTALL_LOG"
+  printf "%b\n" "App log:     $APP_LOG"
+  exit 0
+}
+
 logo
 mkdir -p "$LOG_DIR"
 : > "$INSTALL_LOG"
 step "Checking prerequisites"
 check_and_install_prerequisites
 ok "Required tools are available"
+if [[ "$BRANCH" == "dev" ]]; then
+  warn "Development branch. Not stable."
+fi
+
+step "Preparing install directories"
+mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR"
+if [[ "$IS_ROOT" -eq 1 ]]; then
+  chown -R "$RUN_USER":"$RUN_USER" "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR" 2>/dev/null || true
+fi
+ok "Install directory: $INSTALL_DIR"
+
+if [[ -d "$INSTALL_DIR/.git" && "${CADDYUI_FORCE_INSTALL:-0}" != "1" ]]; then
+  run_existing_update
+fi
 
 if [[ -f "$INSTALL_DIR/.env" && -z "${CADDYUI_PORT:-}" ]]; then
   existing_port="$(awk -F= '$1=="CADDY_UI_PORT" {print $2}' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)"
@@ -462,13 +524,6 @@ fi
 step "Selecting an available port"
 PORT="$(find_free_port)"
 ok "Selected port $PORT"
-
-step "Preparing install directories"
-mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR"
-if [[ "$IS_ROOT" -eq 1 ]]; then
-  chown -R "$RUN_USER":"$RUN_USER" "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR" 2>/dev/null || true
-fi
-ok "Install directory: $INSTALL_DIR"
 
 step "Downloading CaddyUI from GitHub"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
