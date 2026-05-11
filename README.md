@@ -25,7 +25,7 @@ A friendly web UI for managing your Caddyfile, proxies, snippets, logs, users, a
 
 Because editing reverse proxy configs by hand is fun right up until it is not.
 
-[![Stable release](https://img.shields.io/github/v/release/DrB0rk/CaddyUI?label=stable&sort=semver)](https://github.com/DrB0rk/CaddyUI/releases/latest)
+[![Stable release](https://img.shields.io/github/v/tag/DrB0rk/CaddyUI?filter=v*&label=stable&sort=semver)](https://github.com/DrB0rk/CaddyUI/releases/latest)
 [![Beta tag](https://img.shields.io/github/v/tag/DrB0rk/CaddyUI?filter=B_v*&label=beta&color=8b5cf6&sort=semver)](https://github.com/DrB0rk/CaddyUI/releases)
 [![Last commit](https://img.shields.io/github/last-commit/DrB0rk/CaddyUI)](https://github.com/DrB0rk/CaddyUI/commits)
 [![Stars](https://img.shields.io/github/stars/DrB0rk/CaddyUI?style=flat)](https://github.com/DrB0rk/CaddyUI/stargazers)
