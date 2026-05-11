@@ -30,6 +30,11 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
     setUpdateChannel(settings.updateChannel || 'stable');
   }, [settings.updateChannel]);
 
+  const selectUpdateChannel = (nextChannel) => {
+    setUpdateChannel(nextChannel);
+    setSettings((current) => ({ ...(current || {}), updateChannel: nextChannel }));
+  };
+
   useEffect(() => {
     if (!canAdmin || localTest) return;
     api('/api/users')
@@ -335,7 +340,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
             </div>
             <label>
               Update channel
-              <select value={updateChannel} onChange={(e) => setUpdateChannel(e.target.value)}>
+              <select value={updateChannel} onChange={(e) => selectUpdateChannel(e.target.value)}>
                 <option value="stable">stable</option>
                 <option value="beta">beta</option>
                 <option value="dev">dev</option>

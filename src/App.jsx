@@ -59,9 +59,15 @@ export default function App() {
     finally { setConfigLoading(false); }
   };
 
-  const refreshAppStatus = async (check = false) => {
+  const refreshAppStatus = async (check = false, updateChannel = '') => {
     if (localTest) return;
-    try { const endpoint = check ? '/api/app/check-updates' : '/api/app/status'; const opts = check ? { method: 'POST' } : {}; setAppInfo(await api(endpoint, opts)); }
+    try {
+      const endpoint = check ? '/api/app/check-updates' : '/api/app/status';
+      const opts = check
+        ? { method: 'POST', body: JSON.stringify({ updateChannel: updateChannel || settings?.updateChannel || '' }) }
+        : {};
+      setAppInfo(await api(endpoint, opts));
+    }
     catch (e) { setError(e.message); }
   };
 
@@ -96,12 +102,22 @@ export default function App() {
   if (!localTest && (!status.authenticated || !settings?.configured)) return <AuthGate status={status} onReady={(data) => { setStatus((prev) => ({ ...prev, ...data, settings: data.settings, authenticated: true, discovered: data.discovered || prev?.discovered })); setSettings(data.settings); if (data.settings.configured) { refreshConfig(); refreshAppStatus(false); } }} api={api} />;
 
   const logout = async () => { if (localTest) { location.reload(); return; } await api('/api/logout', { method: 'POST' }); location.reload(); };
-  const checkUpdates = async () => { setCheckingUpdates(true); try { await refreshAppStatus(true); } finally { setCheckingUpdates(false); } };
+  const checkUpdates = async () => {
+    setCheckingUpdates(true);
+    try {
+      await refreshAppStatus(true, settings?.updateChannel || '');
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
   const runUpdate = async () => {
     setUpdating(true);
     setError('');
     try {
-      await api('/api/app/update', { method: 'POST' });
+      await api('/api/app/update', {
+        method: 'POST',
+        body: JSON.stringify({ updateChannel: settings?.updateChannel || '' }),
+      });
       const started = Date.now();
       while (Date.now() - started < 120000) {
         await new Promise((resolve) => setTimeout(resolve, 4000));

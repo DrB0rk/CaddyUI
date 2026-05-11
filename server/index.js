@@ -343,6 +343,14 @@ function updateTargetFromSettings(settings, currentBranch = 'unknown') {
   return { channel: 'stable', branch: UPDATE_BRANCH.stable };
 }
 
+function updateTargetForChannel(channel, fallbackBranch = 'unknown') {
+  const normalized = String(channel || '').trim().toLowerCase();
+  if (UPDATE_CHANNELS.has(normalized)) {
+    return { channel: normalized, branch: UPDATE_BRANCH[normalized] };
+  }
+  return updateTargetFromSettings({ updateChannel: normalized }, fallbackBranch);
+}
+
 async function loadSessionState() {
   const store = await stateStore;
   return (await store.getJson('sessions', { revoked: {} })) || { revoked: {} };
@@ -609,10 +617,12 @@ async function appBranch() {
   return result.ok ? result.stdout.trim() : 'unknown';
 }
 
-async function appUpdateStatus(fetchRemote = false) {
+async function appUpdateStatus(fetchRemote = false, channelOverride = '') {
   const currentBranch = await appBranch();
   const settings = await loadSettings();
-  const { channel, branch: targetBranch } = updateTargetFromSettings(settings, currentBranch);
+  const { channel, branch: targetBranch } = UPDATE_CHANNELS.has(String(channelOverride || '').trim().toLowerCase())
+    ? updateTargetForChannel(channelOverride, currentBranch)
+    : updateTargetFromSettings(settings, currentBranch);
   const head = await run('git', ['rev-parse', 'HEAD'], { cwd: ROOT });
   if (fetchRemote && targetBranch !== 'unknown') {
     await run('git', ['fetch', '--quiet', 'origin', targetBranch], { cwd: ROOT });
@@ -1052,14 +1062,19 @@ app.get('/api/app/status', auth, requirePermission('view'), async (_req, res) =>
   res.json(await appUpdateStatus(false));
 });
 
-app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission('view'), async (_req, res) => {
-  res.json(await appUpdateStatus(true));
+app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission('view'), async (req, res) => {
+  const override = String(req.body?.updateChannel || '').trim().toLowerCase();
+  const channelOverride = UPDATE_CHANNELS.has(override) ? override : '';
+  res.json(await appUpdateStatus(true, channelOverride));
 });
 
-app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (_req, res) => {
+app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
   const currentBranch = await appBranch();
   const settings = await loadSettings();
-  const { branch } = updateTargetFromSettings(settings, currentBranch);
+  const override = String(req.body?.updateChannel || '').trim().toLowerCase();
+  const { branch } = UPDATE_CHANNELS.has(override)
+    ? updateTargetForChannel(override, currentBranch)
+    : updateTargetFromSettings(settings, currentBranch);
   const scriptPath = path.join(ROOT, 'scripts', 'install.sh');
   if (!fssync.existsSync(scriptPath)) {
     return res.status(500).json({ error: 'Installer script not found.' });
