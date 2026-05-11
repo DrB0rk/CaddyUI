@@ -1,7 +1,7 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { Loader2, RefreshCw, Wand2 } from 'lucide-react';
-import { appendSimpleProxy, parseCaddyfile, updateSimpleProxy } from '../../server/caddyParser.js';
+import { appendSimpleProxy, parseCaddyfile, setProxyDisabled, updateSimpleProxy } from '../../server/caddyParser.js';
 import {
   ConfirmModal,
   MiddlewarePicker,
@@ -297,6 +297,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
         imports: selectedImportNames(edit.imports),
         tags: selectedTagNames(edit.tags),
         logging: { mode: edit.logMode, path: edit.logPath },
+        disabled: Boolean(edit.disabled),
       };
       if (localTest) {
         applyLocal(updateSimpleProxy(config.content, { siteLine: edit.line, ...payload }));
@@ -325,6 +326,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       imports: [...new Set(names)].join(', '),
       logMode: logging.mode,
       logPath: logging.path,
+      disabled: Boolean(site.disabled),
       rawOpen: false,
       rawBlock: readBlockAtLine(config.content, site.line),
     });
@@ -360,6 +362,24 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
     } finally {
       setBusy(false);
       setConfirmDelete(null);
+    }
+  };
+
+  const toggleDisabled = async (site) => {
+    setBusy(true);
+    setError('');
+    try {
+      const disabled = !site.disabled;
+      if (localTest) {
+        applyLocal(setProxyDisabled(config.content, { siteLine: site.line, disabled }));
+        return;
+      }
+      const data = await api(`/api/proxies/${site.line}/disabled`, { method: 'POST', body: JSON.stringify({ disabled }) });
+      setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -534,13 +554,22 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 <button type="button" className={`table-sort ${sort.key === 'host' ? 'active' : ''}`} onClick={() => toggleSort('host')}>Host{sortArrow('host')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'upstream' ? 'active' : ''}`} onClick={() => toggleSort('upstream')}>Upstream{sortArrow('upstream')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'local' ? 'active' : ''}`} onClick={() => toggleSort('local')}>Local{sortArrow('local')}</button>
+                <span>State</span>
                 <button type="button" className={`table-sort ${sort.key === 'category' ? 'active' : ''}`} onClick={() => toggleSort('category')}>Category{sortArrow('category')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'tags' ? 'active' : ''}`} onClick={() => toggleSort('tags')}>Tags{sortArrow('tags')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'imports' ? 'active' : ''}`} onClick={() => toggleSort('imports')}>Imports{sortArrow('imports')}</button>
                 <span>Actions</span>
               </div>
               {items.slice(0, renderLimits[groupName] || 0).map((site) => (
-                <ProxyRow key={site.id} site={site} healthCheck={health?.[site.id]?.local} canEdit={canEdit} onEdit={() => startEdit(site)} onDelete={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))} />
+                <ProxyRow
+                  key={site.id}
+                  site={site}
+                  healthCheck={health?.[site.id]?.local}
+                  canEdit={canEdit}
+                  onToggleDisabled={() => toggleDisabled(site)}
+                  onEdit={() => startEdit(site)}
+                  onDelete={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}
+                />
               ))}
               {(renderLimits[groupName] || 0) < items.length && <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /><span /></div>}
             </details>

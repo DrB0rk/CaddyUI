@@ -18,6 +18,7 @@ import {
   appendSnippet,
   updateSnippet,
   deleteBlockAtLine,
+  setProxyDisabled,
 } from './caddyParser.js';
 import { createStateStore } from './stateStore.js';
 
@@ -504,6 +505,13 @@ async function checkProxyHealth(parsed) {
   const results = {};
   await Promise.all(
     (parsed.sites || []).map(async (site) => {
+      if (site.disabled) {
+        results[site.id] = {
+          local: { online: false, error: 'disabled', disabled: true, host: '', port: 0 },
+          domain: { online: false, error: 'disabled', disabled: true, host: splitHostPort(site.addresses?.[0] || '').host, port: 443 },
+        };
+        return;
+      }
       const domain = site.addresses?.[0] || '';
       const upstream = site.proxies?.[0]?.upstreams?.[0] || '';
       const target = splitHostPort(upstream);
@@ -826,6 +834,23 @@ app.delete('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const next = deleteBlockAtLine(content, req.params.line);
+    const validation = await validateConfig(next);
+    if (!validation.ok && !validation.unavailable) {
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+    }
+    await fs.writeFile(settings.caddyfilePath, next, 'utf8');
+    const parsed = await parseConfigCached(next);
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/proxies/:line/disabled', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
+  try {
+    const { settings, content } = await readConfiguredCaddyfile();
+    const disabled = req.body?.disabled !== false;
+    const next = setProxyDisabled(content, { siteLine: req.params.line, disabled });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
