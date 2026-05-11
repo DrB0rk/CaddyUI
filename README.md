@@ -11,6 +11,16 @@ Manage your Caddyfile in a UI so you can stop speedrunning YAML-adjacent stress.
 [![Last commit](https://img.shields.io/github/last-commit/DrB0rk/CaddyUI)](https://github.com/DrB0rk/CaddyUI/commits)
 [![Stars](https://img.shields.io/github/stars/DrB0rk/CaddyUI?style=flat)](https://github.com/DrB0rk/CaddyUI/stargazers)
 
+## ⚠️ Active development warning
+
+CaddyUI is under active development.
+
+- `main` = stable release lane
+- `beta` = pre-release testing lane
+- `dev` = fastest changes, least chill
+
+Expect quick iteration, occasional breakage, and schema/behavior changes between versions.
+
 ## Quick install
 
 ### Stable
