@@ -1,5 +1,5 @@
 import React, { memo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, FileCode2, KeyRound, Layers3, Loader2, Menu, Moon, ScrollText, ServerCog, Settings, Shield, SidebarClose, Sun } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileCode2, KeyRound, Layers3, Loader2, Menu, MessageSquare, Moon, ScrollText, ServerCog, Settings, Shield, SidebarClose, Sun } from 'lucide-react';
 import { updateSimpleProxy } from '../../server/caddyParser.js';
 
 export const pageItems = [
@@ -15,6 +15,12 @@ export function Notice({ type = 'info', children }) {
 }
 
 export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, actionResult, onDismissActionResult }) {
+  const activeVersion = appInfo?.version || appInfo?.localVersion || appVersion;
+  const targetVersion = appInfo?.availableVersion || appInfo?.remoteVersion || '';
+  const shownVersion = updating && targetVersion ? targetVersion : activeVersion;
+  const openFeedback = () => {
+    window.location.href = 'https://github.com/DrB0rk/CaddyUI/issues/new/choose';
+  };
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -23,7 +29,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
             {collapsed ? <Menu /> : <SidebarClose />}
           </button>
           <span className="logo">CaddyUI</span>
-          <span className="app-version">v{appVersion}</span>
+          <span className="app-version">v{shownVersion}</span>
         </div>
         <div className="top-actions">
           {canEdit && (
@@ -60,9 +66,14 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
             </button>
           ))}
         </div>
-        <div className="sidebar-footer">
+        <div className="sidebar-bottom">
+          <button type="button" className="sidebar-feedback" onClick={openFeedback}>
+            <MessageSquare size={18} />
+            <span>Feedback</span>
+          </button>
+          <div className="sidebar-footer">
           <div className="sidebar-meta">
-            <span className="sidebar-version">v{appInfo?.version || appVersion}</span>
+            <span className="sidebar-version">v{shownVersion}</span>
             <span className={`sidebar-status ${appInfo?.updateAvailable ? 'update' : 'current'}`}>
               {updating ? 'Updating' : appInfo?.updateAvailable ? `Update v${appInfo?.availableVersion || appInfo?.remoteVersion || appInfo?.version || appVersion}` : 'Current'}
             </span>
@@ -76,6 +87,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
                 {updating ? 'Updating...' : `Update to v${appInfo?.availableVersion || appInfo?.remoteVersion || appInfo?.version || appVersion}`}
               </button>
             )}
+          </div>
           </div>
         </div>
       </aside>

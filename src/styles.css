@@ -246,6 +246,15 @@ select:focus {
   gap: 8px;
 }
 
+.sidebar-bottom {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-feedback {
+  justify-content: flex-start;
+}
+
 .sidebar-meta {
   display: flex;
   justify-content: space-between;

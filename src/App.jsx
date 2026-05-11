@@ -184,9 +184,19 @@ export default function App() {
             setUpdateMessage('Waiting for updated app to come online...');
           }
           if (confirmedReadyCount >= 2) {
+            const nextVersion = status.version || status.localVersion || targetVersion || baselineVersion;
+            setAppInfo((prev) => ({
+              ...prev,
+              ...status,
+              version: nextVersion,
+              localVersion: nextVersion,
+              availableVersion: nextVersion,
+              remoteVersion: status.remoteVersion || nextVersion,
+              updateAvailable: false,
+            }));
             setUpdating(false);
             setUpdateMessage('');
-            setActionResult({ ok: true, message: `Updated to ${status.version || status.localVersion || 'latest'}. Reloading...` });
+            setActionResult({ ok: true, message: `Updated to ${nextVersion}. Reloading...` });
             const url = new URL(window.location.href);
             url.searchParams.set('v', String(Date.now()));
             setTimeout(() => window.location.replace(url.toString()), 600);
