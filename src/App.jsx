@@ -13,7 +13,20 @@ import { AuthGate, Notice, ReloadConfirmModal, Shell } from './components/common
 const APP_VERSION = pkg.version;
 const localTest = import.meta.env.DEV && import.meta.env.VITE_CADDYUI_LOCAL_TEST === '1';
 const emptyConfig = { path: 'Caddyfile', content: '', parsed: parseCaddyfile(''), health: {} };
-const localSettings = { userConfigured: true, caddyConfigured: true, configured: true, caddyfilePath: 'Caddyfile', logPaths: ['/var/log/caddy/access.log'], updateChannel: 'stable', username: 'local', role: 'admin' };
+const localSettings = {
+  userConfigured: true,
+  caddyConfigured: true,
+  configured: true,
+  caddyfilePath: 'Caddyfile',
+  logPaths: ['/var/log/caddy/access.log'],
+  updateChannel: 'stable',
+  trustProxyHops: 0,
+  allowRemoteSetup: false,
+  secureCookieMode: 'auto',
+  allowedOrigins: [],
+  username: 'local',
+  role: 'admin',
+};
 
 const api = async (path, options = {}) => {
   const res = await fetch(path, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
