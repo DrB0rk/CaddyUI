@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 - 2026-05-11
+
+### Added
+- Stable release of runtime version-sync improvements and sidebar feedback shortcut.
+
+### Changed
+- Version badge updates now follow runtime status during and after updates.
+- Stable installer channel default is set to `main`.
+
 ## 0.2.0-beta - 2026-05-11
 
 ### Added
