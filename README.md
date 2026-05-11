@@ -1,68 +1,58 @@
 # CaddyUI
 
-Web UI for managing a Caddy `Caddyfile`.
+Manage your Caddyfile in a UI so you can stop speedrunning YAML-adjacent stress.
 
-CaddyUI includes proxy management, middleware/snippet management, Monaco editors, validation, reload, logs, user roles, and onboarding.
+[![Stable release](https://img.shields.io/github/v/release/DrB0rk/CaddyUI?label=stable&sort=semver)](https://github.com/DrB0rk/CaddyUI/releases/latest)
+[![Beta tag](https://img.shields.io/github/v/tag/DrB0rk/CaddyUI?filter=B_v*&label=beta&color=8b5cf6&sort=semver)](https://github.com/DrB0rk/CaddyUI/releases)
+[![Last commit](https://img.shields.io/github/last-commit/DrB0rk/CaddyUI)](https://github.com/DrB0rk/CaddyUI/commits)
+[![Stars](https://img.shields.io/github/stars/DrB0rk/CaddyUI?style=flat)](https://github.com/DrB0rk/CaddyUI/stargazers)
 
-## Install
+## Quick install
 
+### Stable
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh | bash
 ```
 
-Open the URL printed by the installer.
+### Beta
+```bash
+curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/beta/scripts/install.sh | bash
+```
 
-`install.sh` is also used for updates.  
-If CaddyUI is already installed, running the same install command updates and restarts it.
+### Dev
+```bash
+curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/dev/scripts/install.sh | bash
+```
 
-## Requirements
+Installer prints your onboarding URL when done.  
+Running the same command again = update mode.
 
-- Node.js 20+
-- git
-- npm
-- curl
-- access to the Caddyfile
-- `caddy` in PATH for validation and reload
+> Yes, beta/dev can show `-dev` style app versions. That is intentional.
 
-## First run
+## What you get
 
-1. Create the admin user.
-2. Enter setup token if required.
-2. Select a detected Caddyfile or enter the path.
-3. Select detected log files or add paths manually.
+- Proxy management (add, edit, disable/enable, delete)
+- Middleware/snippet management
+- Monaco editors for config + entries
+- Caddy validate + reload
+- Log viewer (files + `journalctl`)
+- User auth + roles (`view`, `edit`, `admin`)
+- Onboarding with Caddyfile/log discovery
 
-## Pages
+## Onboarding flow
 
-- **Proxies**
-  - grouped by domain
-  - add/edit/delete
-  - import multi-select
-  - per-site logging selector (`none`, `default`, `stdout`, `stderr`, `file`)
-  - quick search
-- **Middlewares**
-  - add/edit/delete snippets
-  - Monaco editor
-- **Configuration**
-  - raw Caddyfile Monaco editor
-- **Logs**
-  - log viewer with line selector
-- **Settings**
-  - Caddyfile/log path settings
-  - scan buttons for Caddyfiles and log files
-  - user management (admin)
-  - password change
+1. Create admin user
+2. Add setup token (if required)
+3. Pick detected Caddyfile (or set path manually)
+4. Pick detected log files (or add paths manually)
 
-## Roles
+## UI pages
 
-- `view`: read-only access
-- `edit`: config/proxy/middleware/settings edits
-- `admin`: full access, user management, in-app update
-
-## Validate and reload
-
-Global **Validate** and **Reload Caddy** buttons are in the top bar.
-
-CaddyUI creates a backup before saving config changes.
+- **Proxies**: grouped view, search, sorting, imports, logging, tags, category
+- **Middlewares**: create/edit/delete snippets
+- **Configuration**: full raw Caddyfile editor
+- **Logs**: Caddy logs in one place
+- **Settings**: paths, scans, users, password, update channel
 
 ## Reverse proxy example
 
@@ -72,13 +62,13 @@ caddyui.example.com {
 }
 ```
 
-## Reset onboarding
+## Links
 
-```bash
-sudo rm -rf /var/lib/caddyui
-sudo systemctl restart caddyui
-```
-
+- Repo: https://github.com/DrB0rk/CaddyUI
+- Releases: https://github.com/DrB0rk/CaddyUI/releases
+- Stable installer: https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh
+- Beta installer: https://raw.githubusercontent.com/DrB0rk/CaddyUI/beta/scripts/install.sh
+- Dev installer: https://raw.githubusercontent.com/DrB0rk/CaddyUI/dev/scripts/install.sh
 
 ## Uninstall
 
@@ -86,8 +76,9 @@ sudo systemctl restart caddyui
 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/uninstall.sh | bash
 ```
 
-## Force fresh install (skip auto-update mode)
+## Reset onboarding
 
 ```bash
-CADDYUI_FORCE_INSTALL=1 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh | bash
+sudo rm -rf /var/lib/caddyui
+sudo systemctl restart caddyui
 ```
