@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.8 - 2026-05-11
+
+### Added
+- Stable release of the latest proxy/mobile/update improvements from the beta lane.
+
+### Changed
+- Installer default channel on `main` now targets `main`.
+- Tags and category metadata are stored in SQLite instead of Caddyfile comments.
+- Update UX now keeps an updating screen visible until the new version is actually ready.
+- Mobile proxy row layout improved for better readability and action-button access.
+
+### Security
+- Changing the configured Caddyfile path now requires `admin` permission.
+
+## 0.1.8-beta - 2026-05-11
+
+### Added
+- Full-screen update progress overlay that stays visible until the new app version is ready.
+- SQLite-backed proxy metadata table for tags and categories.
+
+### Changed
+- Tags and category are no longer written into Caddyfile comments for proxy create/edit.
+- Proxy rows on mobile now use a clearer label/value layout with more reliable action button visibility.
+
+### Fixed
+- Update flow now waits for branch/commit/version readiness checks before reporting success.
+
+## 0.1.7-beta - 2026-05-11
+
+### Added
+- Beta build with latest dev updates for proxy management, settings, and security controls.
+
+### Changed
+- README stable badge now tracks stable `v*` tags only.
+- Tag autocomplete now continues suggestions after commas.
+- Beta package version now reports `0.1.7-beta`.
+
 ## 0.1.5-dev - 2026-05-11
 
 ### Added

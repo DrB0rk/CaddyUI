@@ -1,6 +1,6 @@
 {
   "name": "caddy-ui",
-  "version": "0.1.5-dev",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "scripts": {
