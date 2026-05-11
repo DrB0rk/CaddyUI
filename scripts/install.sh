@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 APP_NAME="CaddyUI"
-SCRIPT_CHANNEL="main"
-INSTALLER_VERSION="2026.05.11-1"
+SCRIPT_CHANNEL="beta"
+INSTALLER_VERSION="2026.05.11-3"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -164,6 +165,62 @@ check_and_install_prerequisites() {
     NODE_MAJOR="$(node -v | sed -E 's/^v([0-9]+).*/\1/')"
     [[ "$NODE_MAJOR" -ge 20 ]] || fail "Node.js 20+ is still not available after install attempt. Found $(node -v)."
   fi
+}
+
+sqlite_runtime_ok() {
+  if [[ "$DRY_RUN" == "1" ]]; then return 0; fi
+  if [[ ! -d "$INSTALL_DIR/node_modules/sqlite3" ]]; then return 1; fi
+  (
+    cd "$INSTALL_DIR"
+    node -e "require('sqlite3'); process.stdout.write('ok')"
+  ) >> "$INSTALL_LOG" 2>&1
+}
+
+ensure_native_build_prereqs() {
+  local pm
+  pm="$(detect_package_manager)"
+  if [[ "$IS_ROOT" -ne 1 && "$pm" != "brew" ]] && ! has_cmd sudo; then
+    fail "sudo is required to install sqlite build dependencies. Install sudo or run this installer as root."
+  fi
+  case "$pm" in
+    apt) install_system_packages "$pm" build-essential python3 make g++ pkg-config libsqlite3-dev ;;
+    dnf|yum) install_system_packages "$pm" gcc-c++ make python3 pkgconf-pkg-config sqlite-devel ;;
+    pacman) install_system_packages "$pm" base-devel python sqlite ;;
+    zypper) install_system_packages "$pm" gcc-c++ make python3 pkg-config sqlite3-devel ;;
+    apk) install_system_packages "$pm" build-base python3 pkgconf sqlite-dev ;;
+    brew) install_system_packages "$pm" python sqlite ;;
+    *) fail "No supported package manager found. Install build tools and sqlite dev package manually." ;;
+  esac
+}
+
+app_uses_sqlite3() {
+  if [[ "$DRY_RUN" == "1" ]]; then return 1; fi
+  node -e '
+const fs = require("fs");
+const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const deps = Object.assign({}, p.dependencies || {}, p.optionalDependencies || {});
+process.exit(deps.sqlite3 ? 0 : 1);
+' "$INSTALL_DIR/package.json" >> "$INSTALL_LOG" 2>&1
+}
+
+ensure_sqlite_compat() {
+  if ! app_uses_sqlite3; then
+    return 0
+  fi
+  if sqlite_runtime_ok; then
+    return 0
+  fi
+  warn "sqlite3 binary is not compatible with this system."
+  confirm "Install build dependencies and rebuild sqlite3 now?" yes || fail "Install cancelled. CaddyUI cannot run without sqlite3 compatibility."
+  step "Installing native build dependencies"
+  ensure_native_build_prereqs
+  ok "Build dependencies installed"
+  step "Rebuilding sqlite3 for this host"
+  run_quiet npm --prefix "$INSTALL_DIR" rebuild sqlite3 --build-from-source
+  if ! sqlite_runtime_ok; then
+    fail "sqlite3 rebuild failed. Check $INSTALL_LOG"
+  fi
+  ok "sqlite3 rebuilt for local system"
 }
 
 listen_check() {
@@ -472,6 +529,7 @@ run_existing_update() {
   else
     run_quiet npm --prefix "$INSTALL_DIR" install
   fi
+  ensure_sqlite_compat
   ok "Dependencies installed"
 
   step "Building web interface"
@@ -553,6 +611,7 @@ if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
 else
   run_quiet npm --prefix "$INSTALL_DIR" install
 fi
+ensure_sqlite_compat
 ok "Dependencies installed"
 
 step "Building web interface"

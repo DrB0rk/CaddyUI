@@ -13,7 +13,20 @@ import { AuthGate, Notice, ReloadConfirmModal, Shell } from './components/common
 const APP_VERSION = pkg.version;
 const localTest = import.meta.env.DEV && import.meta.env.VITE_CADDYUI_LOCAL_TEST === '1';
 const emptyConfig = { path: 'Caddyfile', content: '', parsed: parseCaddyfile(''), health: {} };
-const localSettings = { userConfigured: true, caddyConfigured: true, configured: true, caddyfilePath: 'Caddyfile', logPaths: ['/var/log/caddy/access.log'], updateChannel: 'stable', username: 'local', role: 'admin' };
+const localSettings = {
+  userConfigured: true,
+  caddyConfigured: true,
+  configured: true,
+  caddyfilePath: 'Caddyfile',
+  logPaths: ['/var/log/caddy/access.log'],
+  updateChannel: 'stable',
+  trustProxyHops: 0,
+  allowRemoteSetup: false,
+  secureCookieMode: 'auto',
+  allowedOrigins: [],
+  username: 'local',
+  role: 'admin',
+};
 
 const api = async (path, options = {}) => {
   const res = await fetch(path, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
@@ -37,6 +50,7 @@ export default function App() {
   const [appInfo, setAppInfo] = useState({ version: APP_VERSION, updateAvailable: false });
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState('');
   const [caddyBusy, setCaddyBusy] = useState(false);
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
   const [actionResult, setActionResult] = useState(null);
@@ -59,9 +73,15 @@ export default function App() {
     finally { setConfigLoading(false); }
   };
 
-  const refreshAppStatus = async (check = false) => {
+  const refreshAppStatus = async (check = false, updateChannel = '') => {
     if (localTest) return;
-    try { const endpoint = check ? '/api/app/check-updates' : '/api/app/status'; const opts = check ? { method: 'POST' } : {}; setAppInfo(await api(endpoint, opts)); }
+    try {
+      const endpoint = check ? '/api/app/check-updates' : '/api/app/status';
+      const opts = check
+        ? { method: 'POST', body: JSON.stringify({ updateChannel: updateChannel || settings?.updateChannel || '' }) }
+        : {};
+      setAppInfo(await api(endpoint, opts));
+    }
     catch (e) { setError(e.message); }
   };
 
@@ -96,31 +116,94 @@ export default function App() {
   if (!localTest && (!status.authenticated || !settings?.configured)) return <AuthGate status={status} onReady={(data) => { setStatus((prev) => ({ ...prev, ...data, settings: data.settings, authenticated: true, discovered: data.discovered || prev?.discovered })); setSettings(data.settings); if (data.settings.configured) { refreshConfig(); refreshAppStatus(false); } }} api={api} />;
 
   const logout = async () => { if (localTest) { location.reload(); return; } await api('/api/logout', { method: 'POST' }); location.reload(); };
-  const checkUpdates = async () => { setCheckingUpdates(true); try { await refreshAppStatus(true); } finally { setCheckingUpdates(false); } };
+  const checkUpdates = async () => {
+    setCheckingUpdates(true);
+    try {
+      await refreshAppStatus(true, settings?.updateChannel || '');
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
   const runUpdate = async () => {
     setUpdating(true);
+    setUpdateMessage('Preparing update...');
     setError('');
     try {
-      await api('/api/app/update', { method: 'POST' });
+      const updateChannel = settings?.updateChannel || '';
+      let baseline = appInfo;
+      try {
+        baseline = await api('/api/app/check-updates', {
+          method: 'POST',
+          body: JSON.stringify({ updateChannel }),
+        });
+        setAppInfo(baseline);
+      } catch {}
+      const baselineCommit = baseline?.localCommit || '';
+      const baselineVersion = baseline?.version || baseline?.localVersion || APP_VERSION;
+      const targetVersion = baseline?.availableVersion || baseline?.remoteVersion || '';
+      setUpdateMessage(targetVersion ? `Updating to ${targetVersion}...` : 'Updating...');
+
+      await api('/api/app/update', {
+        method: 'POST',
+        body: JSON.stringify({ updateChannel }),
+      });
       const started = Date.now();
-      while (Date.now() - started < 120000) {
-        await new Promise((resolve) => setTimeout(resolve, 4000));
+      let confirmedReadyCount = 0;
+      while (Date.now() - started < 240000) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
         try {
-          const status = await api('/api/app/status');
+          const status = await api('/api/app/check-updates', {
+            method: 'POST',
+            body: JSON.stringify({ updateChannel }),
+          });
           setAppInfo(status);
-          if (!status.updateAvailable) {
+          const commitChanged = Boolean(
+            baselineCommit &&
+            status.localCommit &&
+            baselineCommit !== status.localCommit
+          );
+          const versionChanged = Boolean(
+            baselineVersion &&
+            status.version &&
+            baselineVersion !== status.version
+          );
+          const branchAligned = !status.branch || !status.currentBranch || status.branch === status.currentBranch;
+          const upToDate =
+            status.updateAvailable === false &&
+            Boolean(status.localCommit) &&
+            Boolean(status.remoteCommit) &&
+            status.localCommit === status.remoteCommit;
+          if (upToDate && branchAligned && (commitChanged || versionChanged || !baseline?.updateAvailable)) {
+            confirmedReadyCount += 1;
+          } else {
+            confirmedReadyCount = 0;
+          }
+          if (status.updateAvailable) {
+            setUpdateMessage(`Installing update ${status.availableVersion || status.remoteVersion || ''}...`);
+          } else {
+            setUpdateMessage('Waiting for updated app to come online...');
+          }
+          if (confirmedReadyCount >= 2) {
             setUpdating(false);
-            setActionResult({ ok: true, message: 'Updated successfully. Reloading...' });
-            setTimeout(() => location.reload(), 1500);
+            setUpdateMessage('');
+            setActionResult({ ok: true, message: `Updated to ${status.version || status.localVersion || 'latest'}. Reloading...` });
+            const url = new URL(window.location.href);
+            url.searchParams.set('v', String(Date.now()));
+            setTimeout(() => window.location.replace(url.toString()), 600);
             return;
           }
-        } catch {}
+        } catch {
+          confirmedReadyCount = 0;
+          setUpdateMessage('Restarting service...');
+        }
       }
       setUpdating(false);
-      setActionResult({ ok: false, message: 'Update did not finish in time. Check install log.' });
+      setUpdateMessage('');
+      setActionResult({ ok: false, message: 'Update is still running or not ready yet. Check install log.' });
     } catch (e) {
       setError(e.message);
       setUpdating(false);
+      setUpdateMessage('');
     }
   };
 
@@ -149,6 +232,15 @@ export default function App() {
       onDismissActionResult={() => setActionResult(null)}
     >
       {error && <Notice type="error">{error}</Notice>}
+      {updating && (
+        <div className="updating-screen">
+          <div className="updating-card">
+            <Loader2 className="spin" />
+            <h3>Updating CaddyUI</h3>
+            <p>{updateMessage || 'Please wait...'}</p>
+          </div>
+        </div>
+      )}
       {page === 'proxies' && (
         <Proxies
           config={config}

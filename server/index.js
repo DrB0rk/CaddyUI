@@ -8,7 +8,7 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import {
@@ -18,6 +18,7 @@ import {
   appendSnippet,
   updateSnippet,
   deleteBlockAtLine,
+  setProxyDisabled,
 } from './caddyParser.js';
 import { createStateStore } from './stateStore.js';
 
@@ -35,7 +36,6 @@ const DEFAULT_SECRET = 'dev-change-me-caddy-ui';
 const JWT_SECRET = process.env.CADDY_UI_SECRET || DEFAULT_SECRET;
 const COOKIE_NAME = 'caddyui_token';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-const ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
 const SETUP_TOKEN = process.env.CADDY_UI_SETUP_TOKEN || '';
 const LOGIN_WINDOW_MS = Number(process.env.CADDY_UI_LOGIN_WINDOW_MS || 15 * 60 * 1000);
 const LOGIN_MAX_ATTEMPTS = Number(process.env.CADDY_UI_LOGIN_MAX_ATTEMPTS || 5);
@@ -48,12 +48,26 @@ const ROLE_LEVEL = { view: 0, edit: 1, admin: 2 };
 const VALID_ROLES = new Set(['view', 'edit', 'admin']);
 const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,64}$/;
 const MAX_PASSWORD_LENGTH = 72;
-const ALLOWED_ORIGINS = new Set(
+const ENV_ALLOWED_ORIGINS = [
   (process.env.CADDY_UI_ALLOWED_ORIGINS || '')
     .split(',')
     .map((x) => normalizedOrigin(x.trim()))
     .filter(Boolean)
-);
+];
+const ENV_ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
+const ENV_SECURE_COOKIE_MODE =
+  process.env.CADDY_UI_INSECURE_COOKIE === '1'
+    ? 'insecure'
+    : process.env.CADDY_UI_SECURE_COOKIE === '1'
+      ? 'secure'
+      : 'auto';
+const TRUST_PROXY_SETTING = String(process.env.CADDY_UI_TRUST_PROXY || '').trim().toLowerCase();
+const ENV_TRUST_PROXY_HOPS =
+  TRUST_PROXY_SETTING === '1' || TRUST_PROXY_SETTING === 'true'
+    ? 1
+    : /^\d+$/.test(TRUST_PROXY_SETTING) && Number(TRUST_PROXY_SETTING) > 0
+      ? Number(TRUST_PROXY_SETTING)
+      : 0;
 
 const COMMON_CADDYFILES = [
   path.join(ROOT, 'Caddyfile'),
@@ -78,6 +92,13 @@ const UPDATE_BRANCH = {
   beta: 'beta',
   dev: 'dev',
 };
+const JWT_ALGORITHM = 'HS256';
+const COOKIE_MODE_VALUES = new Set(['auto', 'secure', 'insecure']);
+let runtimeAllowedOrigins = new Set(ENV_ALLOWED_ORIGINS);
+let runtimeAllowRemoteSetup = ENV_ALLOW_REMOTE_SETUP;
+let runtimeSecureCookieMode = ENV_SECURE_COOKIE_MODE;
+let runtimeTrustProxyHops = ENV_TRUST_PROXY_HOPS;
+let runtimeTrustForwardHeaders = ENV_TRUST_PROXY_HOPS > 0;
 const stateStore = createStateStore({
   dataDir: DATA_DIR,
   dbPath: DB_PATH,
@@ -90,14 +111,14 @@ if (IS_PRODUCTION && (JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32)) 
   throw new Error('Set CADDY_UI_SECRET to a strong value.');
 }
 
-app.set('trust proxy', process.env.CADDY_UI_TRUST_PROXY === '0' ? false : 1);
+app.set('trust proxy', runtimeTrustProxyHops > 0 ? runtimeTrustProxyHops : false);
 
 app.use(
   cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
       if (!IS_PRODUCTION) return callback(null, true);
-      return callback(null, ALLOWED_ORIGINS.has(origin));
+      return callback(null, runtimeAllowedOrigins.has(normalizedOrigin(origin)));
     },
     credentials: true,
   })
@@ -113,6 +134,9 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (IS_PRODUCTION) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
@@ -126,17 +150,24 @@ function normalizedOrigin(origin) {
   }
 }
 
+function forwardedValue(req, headerName) {
+  if (!runtimeTrustForwardHeaders) return '';
+  const raw = req.headers[headerName];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return String(value || '')
+    .split(',')[0]
+    .trim();
+}
+
 function requestProto(req) {
-  return (
-    req.headers['x-forwarded-proto']?.toString().split(',')[0].trim().toLowerCase() ||
-    (req.secure ? 'https' : 'http')
-  );
+  const forwardedProto = forwardedValue(req, 'x-forwarded-proto').toLowerCase();
+  if (forwardedProto === 'http' || forwardedProto === 'https') return forwardedProto;
+  return req.secure ? 'https' : 'http';
 }
 
 function requestHost(req) {
-  const forwarded = req.headers['x-forwarded-host'];
-  const host = Array.isArray(forwarded) ? forwarded[0] : forwarded || req.headers.host || '';
-  return String(host).split(',')[0].trim().toLowerCase();
+  const host = forwardedValue(req, 'x-forwarded-host') || req.headers.host || '';
+  return String(host).trim().toLowerCase();
 }
 
 function requestOrigin(req) {
@@ -154,7 +185,7 @@ function originAllowed(req) {
   if (!origin) return !IS_PRODUCTION;
   return (
     origin === expectedOrigin(req) ||
-    ALLOWED_ORIGINS.has(origin) ||
+    runtimeAllowedOrigins.has(origin) ||
     (!IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin))
   );
 }
@@ -165,8 +196,6 @@ function requireTrustedOrigin(req, res, next) {
 }
 
 function clientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim();
   return String(req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
 }
 
@@ -174,27 +203,27 @@ function privateIp(ip) {
   return (
     /^127\./.test(ip) ||
     ip === '::1' ||
+    /^::ffff:127\./.test(ip) ||
     /^10\./.test(ip) ||
     /^192\.168\./.test(ip) ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip) ||
+    /^fc|^fd/i.test(ip)
   );
 }
 
 function requireSetupOrigin(req, res, next) {
-  if (ALLOW_REMOTE_SETUP || !IS_PRODUCTION || privateIp(clientIp(req))) return next();
+  if (runtimeAllowRemoteSetup || !IS_PRODUCTION || privateIp(clientIp(req))) return next();
   return res.status(403).json({ error: 'Initial setup is blocked from public addresses.' });
 }
 
 function cookieOptions(req) {
-  const secure =
-    process.env.CADDY_UI_INSECURE_COOKIE === '1'
-      ? false
-      : process.env.CADDY_UI_SECURE_COOKIE === '1' || requestProto(req) === 'https';
+  const secure = runtimeSecureCookieMode === 'insecure' ? false : runtimeSecureCookieMode === 'secure' || requestProto(req) === 'https';
   return { httpOnly: true, sameSite: 'strict', secure, path: '/' };
 }
 
 function tooManyAttempts(key) {
   const now = Date.now();
+  pruneLoginAttempts(now);
   const entry = loginAttempts.get(key);
   if (!entry || now > entry.resetAt) {
     loginAttempts.set(key, { count: 0, resetAt: now + LOGIN_WINDOW_MS });
@@ -205,6 +234,7 @@ function tooManyAttempts(key) {
 
 function recordFailedAttempt(key) {
   const now = Date.now();
+  pruneLoginAttempts(now);
   const entry = loginAttempts.get(key);
   if (!entry || now > entry.resetAt) {
     loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
@@ -217,6 +247,20 @@ function clearAttempts(key) {
   loginAttempts.delete(key);
 }
 
+function pruneLoginAttempts(now = Date.now()) {
+  if (loginAttempts.size < 500) return;
+  for (const [key, value] of loginAttempts.entries()) {
+    if (!value?.resetAt || value.resetAt <= now) loginAttempts.delete(key);
+  }
+}
+
+function secureEqual(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (!left.length || left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
 function normalizeUser(user, fallbackRole = 'view') {
   if (!user) return null;
   return {
@@ -224,6 +268,45 @@ function normalizeUser(user, fallbackRole = 'view') {
     passwordHash: user.passwordHash || '',
     role: user.role || fallbackRole,
   };
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function normalizeCookieMode(value, fallback = 'auto') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+  return COOKIE_MODE_VALUES.has(normalized) ? normalized : fallback;
+}
+
+function normalizeAllowedOrigins(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(/[\n,]/);
+  return [...new Set(values.map((item) => normalizedOrigin(String(item || '').trim())).filter(Boolean))];
+}
+
+function normalizeTrustProxyHops(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const hops = Math.floor(numeric);
+  return hops > 0 ? hops : 0;
+}
+
+function applyRuntimeSecurity(settings) {
+  runtimeAllowedOrigins = new Set(normalizeAllowedOrigins(settings.allowedOrigins));
+  runtimeAllowRemoteSetup = normalizeBoolean(settings.allowRemoteSetup, ENV_ALLOW_REMOTE_SETUP);
+  runtimeSecureCookieMode = normalizeCookieMode(settings.secureCookieMode, ENV_SECURE_COOKIE_MODE);
+  runtimeTrustProxyHops = normalizeTrustProxyHops(settings.trustProxyHops, ENV_TRUST_PROXY_HOPS);
+  runtimeTrustForwardHeaders = runtimeTrustProxyHops > 0;
+  app.set('trust proxy', runtimeTrustProxyHops > 0 ? runtimeTrustProxyHops : false);
 }
 
 function normalizeSettings(settings) {
@@ -240,6 +323,10 @@ function normalizeSettings(settings) {
     caddyfilePath: base.caddyfilePath || '',
     logPaths: Array.isArray(base.logPaths) ? base.logPaths : COMMON_LOGS,
     updateChannel: UPDATE_CHANNELS.has(base.updateChannel) ? base.updateChannel : 'stable',
+    trustProxyHops: normalizeTrustProxyHops(base.trustProxyHops, ENV_TRUST_PROXY_HOPS),
+    allowRemoteSetup: normalizeBoolean(base.allowRemoteSetup, ENV_ALLOW_REMOTE_SETUP),
+    secureCookieMode: normalizeCookieMode(base.secureCookieMode, ENV_SECURE_COOKIE_MODE),
+    allowedOrigins: normalizeAllowedOrigins(base.allowedOrigins ?? ENV_ALLOWED_ORIGINS),
     users,
   };
 }
@@ -286,13 +373,18 @@ function adminCount(settings) {
 async function loadSettings() {
   const store = await stateStore;
   const raw = await store.getJson('settings', null);
-  if (!raw) return normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
-  return normalizeSettings(raw);
+  const normalized = raw
+    ? normalizeSettings(raw)
+    : normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
+  applyRuntimeSecurity(normalized);
+  return normalized;
 }
 
 async function saveSettings(settings) {
   const store = await stateStore;
-  await store.setJson('settings', normalizeSettings(settings));
+  const normalized = normalizeSettings(settings);
+  applyRuntimeSecurity(normalized);
+  await store.setJson('settings', normalized);
 }
 
 function publicSettings(settings, currentUsername = '') {
@@ -305,6 +397,10 @@ function publicSettings(settings, currentUsername = '') {
     caddyfilePath: normalized.caddyfilePath || '',
     logPaths: normalized.logPaths || COMMON_LOGS,
     updateChannel: normalized.updateChannel || 'stable',
+    trustProxyHops: normalized.trustProxyHops ?? 0,
+    allowRemoteSetup: Boolean(normalized.allowRemoteSetup),
+    secureCookieMode: normalized.secureCookieMode || 'auto',
+    allowedOrigins: normalized.allowedOrigins || [],
     username: currentUser?.username || '',
     role: currentUser?.role || '',
   };
@@ -327,6 +423,10 @@ function statusSettings(settings, authenticated, currentUsername = '') {
     caddyfilePath: normalized.caddyfilePath || '',
     logPaths: normalized.logPaths || COMMON_LOGS,
     updateChannel: normalized.updateChannel || 'stable',
+    trustProxyHops: normalized.trustProxyHops ?? 0,
+    allowRemoteSetup: Boolean(normalized.allowRemoteSetup),
+    secureCookieMode: normalized.secureCookieMode || 'auto',
+    allowedOrigins: normalized.allowedOrigins || [],
   };
 }
 
@@ -340,6 +440,14 @@ function updateTargetFromSettings(settings, currentBranch = 'unknown') {
     return { channel: currentBranch, branch: currentBranch };
   }
   return { channel: 'stable', branch: UPDATE_BRANCH.stable };
+}
+
+function updateTargetForChannel(channel, fallbackBranch = 'unknown') {
+  const normalized = String(channel || '').trim().toLowerCase();
+  if (UPDATE_CHANNELS.has(normalized)) {
+    return { channel: normalized, branch: UPDATE_BRANCH[normalized] };
+  }
+  return updateTargetFromSettings({ updateChannel: normalized }, fallbackBranch);
 }
 
 async function loadSessionState() {
@@ -374,14 +482,14 @@ async function revokeToken(decoded) {
 }
 
 function sign(username) {
-  return jwt.sign({ username, jti: randomUUID() }, JWT_SECRET, { expiresIn: '4h' });
+  return jwt.sign({ username, jti: randomUUID() }, JWT_SECRET, { algorithm: JWT_ALGORITHM, expiresIn: '4h' });
 }
 
 async function auth(req, res, next) {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
     if (await tokenRevoked(decoded.jti)) return res.status(401).json({ error: 'Session expired' });
     const settings = await loadSettings();
     const user = currentUserRecord(settings, decoded.username);
@@ -398,7 +506,7 @@ function authenticatedUser(req) {
   const token = req.cookies?.[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return null;
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
   } catch {
     return null;
   }
@@ -504,6 +612,13 @@ async function checkProxyHealth(parsed) {
   const results = {};
   await Promise.all(
     (parsed.sites || []).map(async (site) => {
+      if (site.disabled) {
+        results[site.id] = {
+          local: { online: false, error: 'disabled', disabled: true, host: '', port: 0 },
+          domain: { online: false, error: 'disabled', disabled: true, host: splitHostPort(site.addresses?.[0] || '').host, port: 443 },
+        };
+        return;
+      }
       const domain = site.addresses?.[0] || '';
       const upstream = site.proxies?.[0]?.upstreams?.[0] || '';
       const target = splitHostPort(upstream);
@@ -569,10 +684,14 @@ async function collectLogs(settings, lines = 200) {
 }
 
 async function validateConfig(content) {
-  const tmp = path.join(os.tmpdir(), `caddyui-${Date.now()}.Caddyfile`);
-  await fs.writeFile(tmp, content, 'utf8');
-  const result = await run('caddy', ['validate', '--config', tmp, '--adapter', 'caddyfile']);
-  await fs.rm(tmp, { force: true });
+  const tmp = path.join(os.tmpdir(), `caddyui-${process.pid}-${Date.now()}-${randomUUID()}.Caddyfile`);
+  await fs.writeFile(tmp, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  let result;
+  try {
+    result = await run('caddy', ['validate', '--config', tmp, '--adapter', 'caddyfile']);
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
   if (result.code === -1) {
     return {
       ok: false,
@@ -596,15 +715,123 @@ async function parseConfigCached(content) {
   return parsed;
 }
 
+function normalizeProxyTags(tags = []) {
+  const values = Array.isArray(tags)
+    ? tags
+    : String(tags || '')
+        .split(',')
+        .map((x) => x.trim());
+  const seen = new Set();
+  const normalized = [];
+  for (const value of values) {
+    const tag = String(value || '').trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(tag);
+  }
+  return normalized;
+}
+
+function normalizeProxyCategory(value = '') {
+  return String(value || '')
+    .split(',')[0]
+    .trim();
+}
+
+function proxyMetaKeyFromParts(host = '', upstream = '') {
+  const normalizedHost = String(host || '').trim().toLowerCase();
+  const normalizedUpstream = String(upstream || '').trim();
+  return normalizedHost && normalizedUpstream ? `${normalizedHost}|${normalizedUpstream}` : '';
+}
+
+function proxyMetaKeyFromSite(site) {
+  const host = site?.addresses?.[0] || '';
+  const upstream = site?.proxies?.[0]?.upstreams?.[0] || '';
+  return proxyMetaKeyFromParts(host, upstream);
+}
+
+function mergeProxyMeta(parsed, metaMap = {}) {
+  if (!parsed?.sites?.length) return parsed;
+  const sites = parsed.sites.map((site) => {
+    const key = proxyMetaKeyFromSite(site);
+    const meta = key ? metaMap[key] : null;
+    return {
+      ...site,
+      tags: normalizeProxyTags(meta?.tags?.length ? meta.tags : site.tags || []),
+      category: normalizeProxyCategory(meta?.category || site.category || ''),
+    };
+  });
+  return { ...parsed, sites };
+}
+
+async function parseConfigWithMeta(content) {
+  const parsed = await parseConfigCached(content);
+  const store = await stateStore;
+  const metaMap = await store.getProxyMetaMap();
+  const migrations = [];
+  for (const site of parsed?.sites || []) {
+    const key = proxyMetaKeyFromSite(site);
+    if (!key || metaMap[key]) continue;
+    const tags = normalizeProxyTags(site.tags || []);
+    const category = normalizeProxyCategory(site.category || '');
+    if (!tags.length && !category) continue;
+    migrations.push({ key, tags, category });
+  }
+  if (migrations.length) {
+    for (const entry of migrations) {
+      await store.setProxyMeta(entry.key, entry.tags, entry.category);
+      metaMap[entry.key] = { tags: entry.tags, category: entry.category };
+    }
+  }
+  const merged = mergeProxyMeta(parsed, metaMap);
+  return merged;
+}
+
+async function pruneProxyMetaForParsed(parsed) {
+  const store = await stateStore;
+  const keys = (parsed?.sites || []).map(proxyMetaKeyFromSite).filter(Boolean);
+  await store.pruneProxyMeta(keys);
+}
+
+async function saveProxyMetaByParts(host, upstream, tags = [], category = '') {
+  const store = await stateStore;
+  const key = proxyMetaKeyFromParts(host, upstream);
+  if (!key) return;
+  const normalizedTags = normalizeProxyTags(tags);
+  const normalizedCategory = normalizeProxyCategory(category);
+  if (!normalizedTags.length && !normalizedCategory) {
+    await store.deleteProxyMeta(key);
+    return;
+  }
+  await store.setProxyMeta(key, normalizedTags, normalizedCategory);
+}
+
+async function saveProxyMetaForSite(site, tags = [], category = '') {
+  const host = site?.addresses?.[0] || '';
+  const upstream = site?.proxies?.[0]?.upstreams?.[0] || '';
+  await saveProxyMetaByParts(host, upstream, tags, category);
+}
+
+async function deleteProxyMetaForSite(site) {
+  const store = await stateStore;
+  const key = proxyMetaKeyFromSite(site);
+  if (!key) return;
+  await store.deleteProxyMeta(key);
+}
+
 async function appBranch() {
   const result = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT });
   return result.ok ? result.stdout.trim() : 'unknown';
 }
 
-async function appUpdateStatus(fetchRemote = false) {
+async function appUpdateStatus(fetchRemote = false, channelOverride = '') {
   const currentBranch = await appBranch();
   const settings = await loadSettings();
-  const { channel, branch: targetBranch } = updateTargetFromSettings(settings, currentBranch);
+  const { channel, branch: targetBranch } = UPDATE_CHANNELS.has(String(channelOverride || '').trim().toLowerCase())
+    ? updateTargetForChannel(channelOverride, currentBranch)
+    : updateTargetFromSettings(settings, currentBranch);
   const head = await run('git', ['rev-parse', 'HEAD'], { cwd: ROOT });
   if (fetchRemote && targetBranch !== 'unknown') {
     await run('git', ['fetch', '--quiet', 'origin', targetBranch], { cwd: ROOT });
@@ -656,16 +883,23 @@ app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req
     return res.status(409).json({ error: 'Admin user is already configured.' });
   }
   const { username, password, setupToken } = req.body || {};
-  if (setupTokenRequired(settings) && setupToken !== SETUP_TOKEN) {
+  const setupRateKey = `setup:${clientIp(req)}`;
+  if (tooManyAttempts(setupRateKey)) {
+    return res.status(429).json({ error: 'Too many setup attempts.' });
+  }
+  if (setupTokenRequired(settings) && !secureEqual(setupToken, SETUP_TOKEN)) {
+    recordFailedAttempt(setupRateKey);
     return res.status(403).json({ error: 'Invalid setup token.' });
   }
   if (!validUsername(username) || !validPassword(password)) {
+    recordFailedAttempt(setupRateKey);
     return res.status(400).json({ error: `Username format is invalid or password must be 8-${MAX_PASSWORD_LENGTH} characters.` });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
   const next = { ...settings, configured: false, users: [{ username: String(username).trim(), passwordHash, role: 'admin' }] };
   await saveSettings(next);
+  clearAttempts(setupRateKey);
   res.cookie(COOKIE_NAME, sign(String(username).trim()), cookieOptions(req));
   res.json({
     settings: publicSettings(next, String(username).trim()),
@@ -715,7 +949,7 @@ app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (token) {
     try {
-      await revokeToken(jwt.verify(token, JWT_SECRET));
+      await revokeToken(jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] }));
     } catch {}
   }
   res.clearCookie(COOKIE_NAME, cookieOptions(req));
@@ -725,7 +959,7 @@ app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
 app.get('/api/config', auth, requirePermission('view'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
-    const parsed = await parseConfigCached(content);
+    const parsed = await parseConfigWithMeta(content);
     const includeHealth = String(req.query.health || '0') === '1';
     res.json({
       path: settings.caddyfilePath,
@@ -747,7 +981,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     if (validate) {
       const validation = await validateConfig(content);
       if (!validation.ok) {
-        return res.status(400).json({ error: 'Caddy validation failed.', validation, parsed: await parseConfigCached(content) });
+        return res.status(400).json({ error: 'Caddy validation failed.', validation, parsed: await parseConfigWithMeta(content) });
       }
     }
 
@@ -757,7 +991,9 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     } catch {}
 
     await fs.writeFile(settings.caddyfilePath, content, 'utf8');
-    res.json({ ok: true, backup, parsed: await parseConfigCached(content) });
+    const parsed = await parseConfigWithMeta(content);
+    await pruneProxyMetaForParsed(parsed);
+    res.json({ ok: true, backup, parsed });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -766,7 +1002,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
 app.get('/api/proxies/health', auth, requirePermission('view'), async (_req, res) => {
   try {
     const { content } = await readConfiguredCaddyfile();
-    const parsed = await parseConfigCached(content);
+    const parsed = await parseConfigWithMeta(content);
     res.json({ health: await checkProxyHealth(parsed) });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -796,10 +1032,11 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
     const next = appendSimpleProxy(content, req.body || {});
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category);
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -809,13 +1046,22 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
 app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
+    const previousParsed = await parseConfigCached(content);
+    const previousSite = previousParsed.sites.find((site) => String(site.line) === String(req.params.line));
+    const previousMetaKey = proxyMetaKeyFromSite(previousSite);
     const next = updateSimpleProxy(content, { ...req.body, siteLine: req.params.line });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    const nextMetaKey = proxyMetaKeyFromParts(req.body?.host, req.body?.upstream);
+    if (previousMetaKey && nextMetaKey && previousMetaKey !== nextMetaKey) {
+      const store = await stateStore;
+      await store.deleteProxyMeta(previousMetaKey);
+    }
+    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category);
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -825,13 +1071,33 @@ app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edi
 app.delete('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
+    const previousParsed = await parseConfigCached(content);
+    const previousSite = previousParsed.sites.find((site) => String(site.line) === String(req.params.line));
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    await deleteProxyMetaForSite(previousSite);
+    const parsed = await parseConfigWithMeta(next);
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/proxies/:line/disabled', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
+  try {
+    const { settings, content } = await readConfiguredCaddyfile();
+    const disabled = req.body?.disabled !== false;
+    const next = setProxyDisabled(content, { siteLine: req.params.line, disabled });
+    const validation = await validateConfig(next);
+    if (!validation.ok && !validation.unavailable) {
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
+    }
+    await fs.writeFile(settings.caddyfilePath, next, 'utf8');
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -844,10 +1110,10 @@ app.post('/api/middlewares', requireTrustedOrigin, auth, requirePermission('edit
     const next = appendSnippet(content, req.body || {});
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -859,10 +1125,10 @@ app.put('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermission(
     const next = updateSnippet(content, { ...req.body, line: req.params.line });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -874,10 +1140,10 @@ app.delete('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermissi
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -901,9 +1167,29 @@ app.get('/api/settings', auth, requirePermission('view'), async (req, res) => {
 
 app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   const settings = await loadSettings();
-  const { caddyfilePath, logPaths } = req.body || {};
-  if (caddyfilePath && !fssync.existsSync(caddyfilePath)) {
+  const {
+    caddyfilePath,
+    logPaths,
+    trustProxyHops,
+    allowRemoteSetup,
+    secureCookieMode,
+    allowedOrigins,
+  } = req.body || {};
+  const requestedCaddyfilePath = String(caddyfilePath || '').trim();
+  const changingCaddyfilePath = Boolean(requestedCaddyfilePath) && requestedCaddyfilePath !== String(settings.caddyfilePath || '');
+  if (requestedCaddyfilePath && !fssync.existsSync(requestedCaddyfilePath)) {
     return res.status(400).json({ error: 'Caddyfile path does not exist.' });
+  }
+  if (changingCaddyfilePath && !hasPermission(req.user?.role, 'admin')) {
+    return res.status(403).json({ error: 'Admin permission required to change Caddyfile path.' });
+  }
+  const updatingSecuritySettings =
+    trustProxyHops !== undefined ||
+    allowRemoteSetup !== undefined ||
+    secureCookieMode !== undefined ||
+    allowedOrigins !== undefined;
+  if (updatingSecuritySettings && !hasPermission(req.user?.role, 'admin')) {
+    return res.status(403).json({ error: 'Admin permission required for security settings.' });
   }
 
   const nextLogPaths = [];
@@ -913,8 +1199,16 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
 
   const next = {
     ...settings,
-    caddyfilePath: caddyfilePath || settings.caddyfilePath,
+    caddyfilePath: requestedCaddyfilePath || settings.caddyfilePath,
     logPaths: nextLogPaths,
+    trustProxyHops:
+      trustProxyHops === undefined ? settings.trustProxyHops : normalizeTrustProxyHops(trustProxyHops, settings.trustProxyHops),
+    allowRemoteSetup:
+      allowRemoteSetup === undefined ? settings.allowRemoteSetup : normalizeBoolean(allowRemoteSetup, settings.allowRemoteSetup),
+    secureCookieMode:
+      secureCookieMode === undefined ? settings.secureCookieMode : normalizeCookieMode(secureCookieMode, settings.secureCookieMode),
+    allowedOrigins:
+      allowedOrigins === undefined ? settings.allowedOrigins : normalizeAllowedOrigins(allowedOrigins),
   };
   await saveSettings(next);
   res.json({ settings: publicSettings(next, req.user.username) });
@@ -1027,14 +1321,19 @@ app.get('/api/app/status', auth, requirePermission('view'), async (_req, res) =>
   res.json(await appUpdateStatus(false));
 });
 
-app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission('view'), async (_req, res) => {
-  res.json(await appUpdateStatus(true));
+app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission('view'), async (req, res) => {
+  const override = String(req.body?.updateChannel || '').trim().toLowerCase();
+  const channelOverride = UPDATE_CHANNELS.has(override) ? override : '';
+  res.json(await appUpdateStatus(true, channelOverride));
 });
 
-app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (_req, res) => {
+app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
   const currentBranch = await appBranch();
   const settings = await loadSettings();
-  const { branch } = updateTargetFromSettings(settings, currentBranch);
+  const override = String(req.body?.updateChannel || '').trim().toLowerCase();
+  const { branch } = UPDATE_CHANNELS.has(override)
+    ? updateTargetForChannel(override, currentBranch)
+    : updateTargetFromSettings(settings, currentBranch);
   const scriptPath = path.join(ROOT, 'scripts', 'install.sh');
   if (!fssync.existsSync(scriptPath)) {
     return res.status(500).json({ error: 'Installer script not found.' });
@@ -1054,6 +1353,8 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(dist));
   app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
+
+loadSettings().catch(() => {});
 
 app.listen(PORT, () => {
   console.log(`CaddyUI API listening on :${PORT}`);

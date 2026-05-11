@@ -6,6 +6,10 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
   const [form, setForm] = useState({
     caddyfilePath: settings.caddyfilePath || '',
     logPaths: (settings.logPaths || []).join('\n'),
+    trustProxyHops: String(settings.trustProxyHops ?? 0),
+    allowRemoteSetup: Boolean(settings.allowRemoteSetup),
+    secureCookieMode: settings.secureCookieMode || 'auto',
+    allowedOrigins: (settings.allowedOrigins || []).join('\n'),
   });
   const [updateChannel, setUpdateChannel] = useState(settings.updateChannel || 'stable');
   const [msg, setMsg] = useState('');
@@ -23,12 +27,21 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
     setForm({
       caddyfilePath: settings.caddyfilePath || '',
       logPaths: (settings.logPaths || []).join('\n'),
+      trustProxyHops: String(settings.trustProxyHops ?? 0),
+      allowRemoteSetup: Boolean(settings.allowRemoteSetup),
+      secureCookieMode: settings.secureCookieMode || 'auto',
+      allowedOrigins: (settings.allowedOrigins || []).join('\n'),
     });
-  }, [settings.caddyfilePath, settings.logPaths]);
+  }, [settings.caddyfilePath, settings.logPaths, settings.trustProxyHops, settings.allowRemoteSetup, settings.secureCookieMode, settings.allowedOrigins]);
 
   useEffect(() => {
     setUpdateChannel(settings.updateChannel || 'stable');
   }, [settings.updateChannel]);
+
+  const selectUpdateChannel = (nextChannel) => {
+    setUpdateChannel(nextChannel);
+    setSettings((current) => ({ ...(current || {}), updateChannel: nextChannel }));
+  };
 
   useEffect(() => {
     if (!canAdmin || localTest) return;
@@ -59,24 +72,40 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
       .split('\n')
       .map((x) => x.trim())
       .filter(Boolean);
+    const nextAllowedOrigins = form.allowedOrigins
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const nextTrustProxyHops = Number(form.trustProxyHops || 0);
 
     if (localTest) {
       setSettings({
         ...settings,
         caddyfilePath: form.caddyfilePath,
         logPaths: nextLogPaths,
+        trustProxyHops: Number.isFinite(nextTrustProxyHops) && nextTrustProxyHops > 0 ? Math.floor(nextTrustProxyHops) : 0,
+        allowRemoteSetup: Boolean(form.allowRemoteSetup),
+        secureCookieMode: form.secureCookieMode || 'auto',
+        allowedOrigins: nextAllowedOrigins,
       });
       setMsg('Saved in browser only.');
       return;
     }
 
     try {
+      const payload = {
+        caddyfilePath: form.caddyfilePath,
+        logPaths: nextLogPaths,
+      };
+      if (canAdmin) {
+        payload.trustProxyHops = Number.isFinite(nextTrustProxyHops) && nextTrustProxyHops > 0 ? Math.floor(nextTrustProxyHops) : 0;
+        payload.allowRemoteSetup = Boolean(form.allowRemoteSetup);
+        payload.secureCookieMode = form.secureCookieMode || 'auto';
+        payload.allowedOrigins = nextAllowedOrigins;
+      }
       const r = await api('/api/settings', {
         method: 'POST',
-        body: JSON.stringify({
-          caddyfilePath: form.caddyfilePath,
-          logPaths: nextLogPaths,
-        }),
+        body: JSON.stringify(payload),
       });
       setSettings(r.settings);
       setMsg('Settings saved.');
@@ -177,6 +206,14 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
           <span>Log paths</span>
           <b>{configuredLogCount}</b>
         </div>
+        <div>
+          <span>Trusted proxy hops</span>
+          <b>{settings.trustProxyHops ?? 0}</b>
+        </div>
+        <div>
+          <span>Cookie mode</span>
+          <b>{settings.secureCookieMode || 'auto'}</b>
+        </div>
       </div>
 
       <form className="settings-form" onSubmit={save}>
@@ -248,6 +285,51 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
             </select>
           )}
         </div>
+
+        <div className="settings-section-head">
+          <h3>Security</h3>
+          <p>Trusted proxy, cookie behavior, setup access, and extra allowed origins.</p>
+        </div>
+        <label>
+          Trust proxy hops
+          <input
+            type="number"
+            min="0"
+            value={form.trustProxyHops}
+            onChange={(e) => setForm({ ...form, trustProxyHops: e.target.value })}
+            readOnly={!canAdmin}
+          />
+        </label>
+        <label>
+          Cookie mode
+          <select
+            value={form.secureCookieMode}
+            onChange={(e) => setForm({ ...form, secureCookieMode: e.target.value })}
+            disabled={!canAdmin}
+          >
+            <option value="auto">auto</option>
+            <option value="secure">secure</option>
+            <option value="insecure">insecure</option>
+          </select>
+        </label>
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(form.allowRemoteSetup)}
+            onChange={(e) => setForm({ ...form, allowRemoteSetup: e.target.checked })}
+            disabled={!canAdmin}
+          />
+          Allow first-time setup from public IPs
+        </label>
+        <label>
+          Additional allowed origins
+          <textarea
+            rows="4"
+            value={form.allowedOrigins}
+            onChange={(e) => setForm({ ...form, allowedOrigins: e.target.value })}
+            readOnly={!canAdmin}
+          />
+        </label>
         {canEdit && <button className="primary">Save settings</button>}
       </form>
 
@@ -335,7 +417,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
             </div>
             <label>
               Update channel
-              <select value={updateChannel} onChange={(e) => setUpdateChannel(e.target.value)}>
+              <select value={updateChannel} onChange={(e) => selectUpdateChannel(e.target.value)}>
                 <option value="stable">stable</option>
                 <option value="beta">beta</option>
                 <option value="dev">dev</option>

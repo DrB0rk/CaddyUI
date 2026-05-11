@@ -172,7 +172,7 @@ export const readBlockAtLine = (content, line) => {
 
 export const previewProxyBlock = (content, draft) => {
   try {
-    const next = updateSimpleProxy(content, { siteLine: draft.line, host: draft.host, upstream: draft.upstream, imports: selectedImportNames(draft.imports), logging: { mode: draft.logMode, path: draft.logPath }, tags: selectedTagNames(draft.tags), category: draft.category });
+    const next = updateSimpleProxy(content, { siteLine: draft.line, host: draft.host, upstream: draft.upstream, imports: selectedImportNames(draft.imports), logging: { mode: draft.logMode, path: draft.logPath }, tags: selectedTagNames(draft.tags), category: draft.category, disabled: Boolean(draft.disabled) });
     return readBlockAtLine(next, draft.line) || draft.rawBlock || '';
   } catch {
     return draft.rawBlock || '';
@@ -191,8 +191,34 @@ export function MiddlewarePicker({ snippets, value, onChange }) {
   return <div className="import-dropdown"><button type="button" className="import-dropdown-trigger" onClick={() => setOpen((v) => !v)}>{selected.length ? `${selected.length} selected` : 'Select imports'}</button>{open && <div className="import-dropdown-menu">{snippets.map((s) => <label key={s.name} className="import-option"><input type="checkbox" checked={selected.includes(s.name)} onChange={() => toggle(s.name)} /><span>{s.name}</span><small>{s.inferredType}</small></label>)}</div>}</div>;
 }
 
-export const StatusDot = ({ check }) => <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
+export const StatusDot = ({ check, disabled = false }) => {
+  if (disabled || check?.disabled) return <span className="status-dot disabled">disabled</span>;
+  return <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
+};
 
-export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete }) {
-  return <div className="proxy-row"><div className="proxy-row-main"><span className="proxy-host">{site.addresses.join(', ')}</span><span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span><StatusDot check={healthCheck} /><span className="proxy-category">{site.category || 'none'}</span><span className="proxy-tags">{(site.tags || []).join(', ') || 'none'}</span><span className="proxy-mw">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span><div className="row-actions">{canEdit && <><button type="button" onClick={onEdit}>Edit</button><button type="button" className="danger" onClick={onDelete}>Delete</button></>}</div></div></div>;
+export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete, onToggleDisabled }) {
+  return (
+    <div className={`proxy-row ${site.disabled ? 'disabled' : ''}`}>
+      <div className="proxy-row-main">
+        <span className="proxy-host" data-label="Host">{site.addresses.join(', ')}</span>
+        <span className="proxy-target" data-label="Upstream">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
+        <div className="proxy-local" data-label="Local">
+          <StatusDot check={healthCheck} disabled={site.disabled} />
+        </div>
+        <span className={`proxy-state ${site.disabled ? 'disabled' : 'enabled'}`} data-label="State">{site.disabled ? 'disabled' : 'enabled'}</span>
+        <span className="proxy-category" data-label="Category">{site.category || 'none'}</span>
+        <span className="proxy-tags" data-label="Tags">{(site.tags || []).join(', ') || 'none'}</span>
+        <span className="proxy-mw" data-label="Imports">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
+        <div className="row-actions">
+          {canEdit && (
+            <>
+              <button type="button" onClick={onToggleDisabled}>{site.disabled ? 'Enable' : 'Disable'}</button>
+              <button type="button" onClick={onEdit}>Edit</button>
+              <button type="button" className="danger" onClick={onDelete}>Delete</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 });
