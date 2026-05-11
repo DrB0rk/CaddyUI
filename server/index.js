@@ -1175,8 +1175,13 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
     secureCookieMode,
     allowedOrigins,
   } = req.body || {};
-  if (caddyfilePath && !fssync.existsSync(caddyfilePath)) {
+  const requestedCaddyfilePath = String(caddyfilePath || '').trim();
+  const changingCaddyfilePath = Boolean(requestedCaddyfilePath) && requestedCaddyfilePath !== String(settings.caddyfilePath || '');
+  if (requestedCaddyfilePath && !fssync.existsSync(requestedCaddyfilePath)) {
     return res.status(400).json({ error: 'Caddyfile path does not exist.' });
+  }
+  if (changingCaddyfilePath && !hasPermission(req.user?.role, 'admin')) {
+    return res.status(403).json({ error: 'Admin permission required to change Caddyfile path.' });
   }
   const updatingSecuritySettings =
     trustProxyHops !== undefined ||
@@ -1194,7 +1199,7 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
 
   const next = {
     ...settings,
-    caddyfilePath: caddyfilePath || settings.caddyfilePath,
+    caddyfilePath: requestedCaddyfilePath || settings.caddyfilePath,
     logPaths: nextLogPaths,
     trustProxyHops:
       trustProxyHops === undefined ? settings.trustProxyHops : normalizeTrustProxyHops(trustProxyHops, settings.trustProxyHops),
