@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
 SCRIPT_CHANNEL="dev"
-INSTALLER_VERSION="2026.05.11-2"
+INSTALLER_VERSION="2026.05.11-3"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -192,7 +192,20 @@ ensure_native_build_prereqs() {
   esac
 }
 
+app_uses_sqlite3() {
+  if [[ "$DRY_RUN" == "1" ]]; then return 1; fi
+  node -e '
+const fs = require("fs");
+const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const deps = Object.assign({}, p.dependencies || {}, p.optionalDependencies || {});
+process.exit(deps.sqlite3 ? 0 : 1);
+' "$INSTALL_DIR/package.json" >> "$INSTALL_LOG" 2>&1
+}
+
 ensure_sqlite_compat() {
+  if ! app_uses_sqlite3; then
+    return 0
+  fi
   if sqlite_runtime_ok; then
     return 0
   fi
