@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.8 - 2026-05-11
+
+### Added
+- Stable release of the latest proxy/mobile/update improvements from the beta lane.
+
+### Changed
+- Installer default channel on `main` now targets `main`.
+- Tags and category metadata are stored in SQLite instead of Caddyfile comments.
+- Update UX now keeps an updating screen visible until the new version is actually ready.
+- Mobile proxy row layout improved for better readability and action-button access.
+
+### Security
+- Changing the configured Caddyfile path now requires `admin` permission.
+
 ## 0.1.8-beta - 2026-05-11
 
 ### Added
