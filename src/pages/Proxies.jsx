@@ -89,7 +89,8 @@ function AutoCompleteInput({ value, onChange, suggestions, placeholder = '' }) {
 function TagAutoCompleteInput({ value, onChange, suggestions, placeholder = '' }) {
   const [open, setOpen] = useState(false);
   const parts = String(value || '').split(',');
-  const used = new Set(parts.slice(0, -1).map((x) => x.trim().toLowerCase()).filter(Boolean));
+  const prefixParts = parts.slice(0, -1).map((x) => x.trim()).filter(Boolean);
+  const used = new Set(prefixParts.map((x) => x.toLowerCase()));
   const current = (parts[parts.length - 1] || '').trim().toLowerCase();
   const matches = useMemo(
     () =>
@@ -102,8 +103,7 @@ function TagAutoCompleteInput({ value, onChange, suggestions, placeholder = '' }
     [suggestions, used, current]
   );
   const applyTag = (tag) => {
-    const prefix = parts.slice(0, -1).map((x) => x.trim()).filter(Boolean);
-    const next = [...prefix, tag].join(', ');
+    const next = [...prefixParts, tag].join(', ');
     onChange(`${next}, `);
   };
   return (
@@ -113,7 +113,10 @@ function TagAutoCompleteInput({ value, onChange, suggestions, placeholder = '' }
         placeholder={placeholder}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 120)}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
       />
       {open && matches.length > 0 && (
         <div className="autocomplete-menu">

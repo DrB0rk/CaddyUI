@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 APP_NAME="CaddyUI"
 SCRIPT_CHANNEL="dev"

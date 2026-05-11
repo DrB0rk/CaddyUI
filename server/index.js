@@ -8,7 +8,7 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import {
@@ -36,7 +36,6 @@ const DEFAULT_SECRET = 'dev-change-me-caddy-ui';
 const JWT_SECRET = process.env.CADDY_UI_SECRET || DEFAULT_SECRET;
 const COOKIE_NAME = 'caddyui_token';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-const ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
 const SETUP_TOKEN = process.env.CADDY_UI_SETUP_TOKEN || '';
 const LOGIN_WINDOW_MS = Number(process.env.CADDY_UI_LOGIN_WINDOW_MS || 15 * 60 * 1000);
 const LOGIN_MAX_ATTEMPTS = Number(process.env.CADDY_UI_LOGIN_MAX_ATTEMPTS || 5);
@@ -49,12 +48,26 @@ const ROLE_LEVEL = { view: 0, edit: 1, admin: 2 };
 const VALID_ROLES = new Set(['view', 'edit', 'admin']);
 const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,64}$/;
 const MAX_PASSWORD_LENGTH = 72;
-const ALLOWED_ORIGINS = new Set(
+const ENV_ALLOWED_ORIGINS = [
   (process.env.CADDY_UI_ALLOWED_ORIGINS || '')
     .split(',')
     .map((x) => normalizedOrigin(x.trim()))
     .filter(Boolean)
-);
+];
+const ENV_ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
+const ENV_SECURE_COOKIE_MODE =
+  process.env.CADDY_UI_INSECURE_COOKIE === '1'
+    ? 'insecure'
+    : process.env.CADDY_UI_SECURE_COOKIE === '1'
+      ? 'secure'
+      : 'auto';
+const TRUST_PROXY_SETTING = String(process.env.CADDY_UI_TRUST_PROXY || '').trim().toLowerCase();
+const ENV_TRUST_PROXY_HOPS =
+  TRUST_PROXY_SETTING === '1' || TRUST_PROXY_SETTING === 'true'
+    ? 1
+    : /^\d+$/.test(TRUST_PROXY_SETTING) && Number(TRUST_PROXY_SETTING) > 0
+      ? Number(TRUST_PROXY_SETTING)
+      : 0;
 
 const COMMON_CADDYFILES = [
   path.join(ROOT, 'Caddyfile'),
@@ -79,6 +92,13 @@ const UPDATE_BRANCH = {
   beta: 'beta',
   dev: 'dev',
 };
+const JWT_ALGORITHM = 'HS256';
+const COOKIE_MODE_VALUES = new Set(['auto', 'secure', 'insecure']);
+let runtimeAllowedOrigins = new Set(ENV_ALLOWED_ORIGINS);
+let runtimeAllowRemoteSetup = ENV_ALLOW_REMOTE_SETUP;
+let runtimeSecureCookieMode = ENV_SECURE_COOKIE_MODE;
+let runtimeTrustProxyHops = ENV_TRUST_PROXY_HOPS;
+let runtimeTrustForwardHeaders = ENV_TRUST_PROXY_HOPS > 0;
 const stateStore = createStateStore({
   dataDir: DATA_DIR,
   dbPath: DB_PATH,
@@ -91,14 +111,14 @@ if (IS_PRODUCTION && (JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32)) 
   throw new Error('Set CADDY_UI_SECRET to a strong value.');
 }
 
-app.set('trust proxy', process.env.CADDY_UI_TRUST_PROXY === '0' ? false : 1);
+app.set('trust proxy', runtimeTrustProxyHops > 0 ? runtimeTrustProxyHops : false);
 
 app.use(
   cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
       if (!IS_PRODUCTION) return callback(null, true);
-      return callback(null, ALLOWED_ORIGINS.has(origin));
+      return callback(null, runtimeAllowedOrigins.has(normalizedOrigin(origin)));
     },
     credentials: true,
   })
@@ -114,6 +134,9 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (IS_PRODUCTION) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
@@ -127,17 +150,24 @@ function normalizedOrigin(origin) {
   }
 }
 
+function forwardedValue(req, headerName) {
+  if (!runtimeTrustForwardHeaders) return '';
+  const raw = req.headers[headerName];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return String(value || '')
+    .split(',')[0]
+    .trim();
+}
+
 function requestProto(req) {
-  return (
-    req.headers['x-forwarded-proto']?.toString().split(',')[0].trim().toLowerCase() ||
-    (req.secure ? 'https' : 'http')
-  );
+  const forwardedProto = forwardedValue(req, 'x-forwarded-proto').toLowerCase();
+  if (forwardedProto === 'http' || forwardedProto === 'https') return forwardedProto;
+  return req.secure ? 'https' : 'http';
 }
 
 function requestHost(req) {
-  const forwarded = req.headers['x-forwarded-host'];
-  const host = Array.isArray(forwarded) ? forwarded[0] : forwarded || req.headers.host || '';
-  return String(host).split(',')[0].trim().toLowerCase();
+  const host = forwardedValue(req, 'x-forwarded-host') || req.headers.host || '';
+  return String(host).trim().toLowerCase();
 }
 
 function requestOrigin(req) {
@@ -155,7 +185,7 @@ function originAllowed(req) {
   if (!origin) return !IS_PRODUCTION;
   return (
     origin === expectedOrigin(req) ||
-    ALLOWED_ORIGINS.has(origin) ||
+    runtimeAllowedOrigins.has(origin) ||
     (!IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin))
   );
 }
@@ -166,8 +196,6 @@ function requireTrustedOrigin(req, res, next) {
 }
 
 function clientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim();
   return String(req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
 }
 
@@ -175,27 +203,27 @@ function privateIp(ip) {
   return (
     /^127\./.test(ip) ||
     ip === '::1' ||
+    /^::ffff:127\./.test(ip) ||
     /^10\./.test(ip) ||
     /^192\.168\./.test(ip) ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip) ||
+    /^fc|^fd/i.test(ip)
   );
 }
 
 function requireSetupOrigin(req, res, next) {
-  if (ALLOW_REMOTE_SETUP || !IS_PRODUCTION || privateIp(clientIp(req))) return next();
+  if (runtimeAllowRemoteSetup || !IS_PRODUCTION || privateIp(clientIp(req))) return next();
   return res.status(403).json({ error: 'Initial setup is blocked from public addresses.' });
 }
 
 function cookieOptions(req) {
-  const secure =
-    process.env.CADDY_UI_INSECURE_COOKIE === '1'
-      ? false
-      : process.env.CADDY_UI_SECURE_COOKIE === '1' || requestProto(req) === 'https';
+  const secure = runtimeSecureCookieMode === 'insecure' ? false : runtimeSecureCookieMode === 'secure' || requestProto(req) === 'https';
   return { httpOnly: true, sameSite: 'strict', secure, path: '/' };
 }
 
 function tooManyAttempts(key) {
   const now = Date.now();
+  pruneLoginAttempts(now);
   const entry = loginAttempts.get(key);
   if (!entry || now > entry.resetAt) {
     loginAttempts.set(key, { count: 0, resetAt: now + LOGIN_WINDOW_MS });
@@ -206,6 +234,7 @@ function tooManyAttempts(key) {
 
 function recordFailedAttempt(key) {
   const now = Date.now();
+  pruneLoginAttempts(now);
   const entry = loginAttempts.get(key);
   if (!entry || now > entry.resetAt) {
     loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
@@ -218,6 +247,20 @@ function clearAttempts(key) {
   loginAttempts.delete(key);
 }
 
+function pruneLoginAttempts(now = Date.now()) {
+  if (loginAttempts.size < 500) return;
+  for (const [key, value] of loginAttempts.entries()) {
+    if (!value?.resetAt || value.resetAt <= now) loginAttempts.delete(key);
+  }
+}
+
+function secureEqual(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (!left.length || left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
 function normalizeUser(user, fallbackRole = 'view') {
   if (!user) return null;
   return {
@@ -225,6 +268,45 @@ function normalizeUser(user, fallbackRole = 'view') {
     passwordHash: user.passwordHash || '',
     role: user.role || fallbackRole,
   };
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function normalizeCookieMode(value, fallback = 'auto') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+  return COOKIE_MODE_VALUES.has(normalized) ? normalized : fallback;
+}
+
+function normalizeAllowedOrigins(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(/[\n,]/);
+  return [...new Set(values.map((item) => normalizedOrigin(String(item || '').trim())).filter(Boolean))];
+}
+
+function normalizeTrustProxyHops(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const hops = Math.floor(numeric);
+  return hops > 0 ? hops : 0;
+}
+
+function applyRuntimeSecurity(settings) {
+  runtimeAllowedOrigins = new Set(normalizeAllowedOrigins(settings.allowedOrigins));
+  runtimeAllowRemoteSetup = normalizeBoolean(settings.allowRemoteSetup, ENV_ALLOW_REMOTE_SETUP);
+  runtimeSecureCookieMode = normalizeCookieMode(settings.secureCookieMode, ENV_SECURE_COOKIE_MODE);
+  runtimeTrustProxyHops = normalizeTrustProxyHops(settings.trustProxyHops, ENV_TRUST_PROXY_HOPS);
+  runtimeTrustForwardHeaders = runtimeTrustProxyHops > 0;
+  app.set('trust proxy', runtimeTrustProxyHops > 0 ? runtimeTrustProxyHops : false);
 }
 
 function normalizeSettings(settings) {
@@ -241,6 +323,10 @@ function normalizeSettings(settings) {
     caddyfilePath: base.caddyfilePath || '',
     logPaths: Array.isArray(base.logPaths) ? base.logPaths : COMMON_LOGS,
     updateChannel: UPDATE_CHANNELS.has(base.updateChannel) ? base.updateChannel : 'stable',
+    trustProxyHops: normalizeTrustProxyHops(base.trustProxyHops, ENV_TRUST_PROXY_HOPS),
+    allowRemoteSetup: normalizeBoolean(base.allowRemoteSetup, ENV_ALLOW_REMOTE_SETUP),
+    secureCookieMode: normalizeCookieMode(base.secureCookieMode, ENV_SECURE_COOKIE_MODE),
+    allowedOrigins: normalizeAllowedOrigins(base.allowedOrigins ?? ENV_ALLOWED_ORIGINS),
     users,
   };
 }
@@ -287,13 +373,18 @@ function adminCount(settings) {
 async function loadSettings() {
   const store = await stateStore;
   const raw = await store.getJson('settings', null);
-  if (!raw) return normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
-  return normalizeSettings(raw);
+  const normalized = raw
+    ? normalizeSettings(raw)
+    : normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
+  applyRuntimeSecurity(normalized);
+  return normalized;
 }
 
 async function saveSettings(settings) {
   const store = await stateStore;
-  await store.setJson('settings', normalizeSettings(settings));
+  const normalized = normalizeSettings(settings);
+  applyRuntimeSecurity(normalized);
+  await store.setJson('settings', normalized);
 }
 
 function publicSettings(settings, currentUsername = '') {
@@ -306,6 +397,10 @@ function publicSettings(settings, currentUsername = '') {
     caddyfilePath: normalized.caddyfilePath || '',
     logPaths: normalized.logPaths || COMMON_LOGS,
     updateChannel: normalized.updateChannel || 'stable',
+    trustProxyHops: normalized.trustProxyHops ?? 0,
+    allowRemoteSetup: Boolean(normalized.allowRemoteSetup),
+    secureCookieMode: normalized.secureCookieMode || 'auto',
+    allowedOrigins: normalized.allowedOrigins || [],
     username: currentUser?.username || '',
     role: currentUser?.role || '',
   };
@@ -328,6 +423,10 @@ function statusSettings(settings, authenticated, currentUsername = '') {
     caddyfilePath: normalized.caddyfilePath || '',
     logPaths: normalized.logPaths || COMMON_LOGS,
     updateChannel: normalized.updateChannel || 'stable',
+    trustProxyHops: normalized.trustProxyHops ?? 0,
+    allowRemoteSetup: Boolean(normalized.allowRemoteSetup),
+    secureCookieMode: normalized.secureCookieMode || 'auto',
+    allowedOrigins: normalized.allowedOrigins || [],
   };
 }
 
@@ -383,14 +482,14 @@ async function revokeToken(decoded) {
 }
 
 function sign(username) {
-  return jwt.sign({ username, jti: randomUUID() }, JWT_SECRET, { expiresIn: '4h' });
+  return jwt.sign({ username, jti: randomUUID() }, JWT_SECRET, { algorithm: JWT_ALGORITHM, expiresIn: '4h' });
 }
 
 async function auth(req, res, next) {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
     if (await tokenRevoked(decoded.jti)) return res.status(401).json({ error: 'Session expired' });
     const settings = await loadSettings();
     const user = currentUserRecord(settings, decoded.username);
@@ -407,7 +506,7 @@ function authenticatedUser(req) {
   const token = req.cookies?.[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return null;
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
   } catch {
     return null;
   }
@@ -585,10 +684,14 @@ async function collectLogs(settings, lines = 200) {
 }
 
 async function validateConfig(content) {
-  const tmp = path.join(os.tmpdir(), `caddyui-${Date.now()}.Caddyfile`);
-  await fs.writeFile(tmp, content, 'utf8');
-  const result = await run('caddy', ['validate', '--config', tmp, '--adapter', 'caddyfile']);
-  await fs.rm(tmp, { force: true });
+  const tmp = path.join(os.tmpdir(), `caddyui-${process.pid}-${Date.now()}-${randomUUID()}.Caddyfile`);
+  await fs.writeFile(tmp, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  let result;
+  try {
+    result = await run('caddy', ['validate', '--config', tmp, '--adapter', 'caddyfile']);
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
   if (result.code === -1) {
     return {
       ok: false,
@@ -674,16 +777,23 @@ app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req
     return res.status(409).json({ error: 'Admin user is already configured.' });
   }
   const { username, password, setupToken } = req.body || {};
-  if (setupTokenRequired(settings) && setupToken !== SETUP_TOKEN) {
+  const setupRateKey = `setup:${clientIp(req)}`;
+  if (tooManyAttempts(setupRateKey)) {
+    return res.status(429).json({ error: 'Too many setup attempts.' });
+  }
+  if (setupTokenRequired(settings) && !secureEqual(setupToken, SETUP_TOKEN)) {
+    recordFailedAttempt(setupRateKey);
     return res.status(403).json({ error: 'Invalid setup token.' });
   }
   if (!validUsername(username) || !validPassword(password)) {
+    recordFailedAttempt(setupRateKey);
     return res.status(400).json({ error: `Username format is invalid or password must be 8-${MAX_PASSWORD_LENGTH} characters.` });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
   const next = { ...settings, configured: false, users: [{ username: String(username).trim(), passwordHash, role: 'admin' }] };
   await saveSettings(next);
+  clearAttempts(setupRateKey);
   res.cookie(COOKIE_NAME, sign(String(username).trim()), cookieOptions(req));
   res.json({
     settings: publicSettings(next, String(username).trim()),
@@ -733,7 +843,7 @@ app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (token) {
     try {
-      await revokeToken(jwt.verify(token, JWT_SECRET));
+      await revokeToken(jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] }));
     } catch {}
   }
   res.clearCookie(COOKIE_NAME, cookieOptions(req));
@@ -936,9 +1046,24 @@ app.get('/api/settings', auth, requirePermission('view'), async (req, res) => {
 
 app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   const settings = await loadSettings();
-  const { caddyfilePath, logPaths } = req.body || {};
+  const {
+    caddyfilePath,
+    logPaths,
+    trustProxyHops,
+    allowRemoteSetup,
+    secureCookieMode,
+    allowedOrigins,
+  } = req.body || {};
   if (caddyfilePath && !fssync.existsSync(caddyfilePath)) {
     return res.status(400).json({ error: 'Caddyfile path does not exist.' });
+  }
+  const updatingSecuritySettings =
+    trustProxyHops !== undefined ||
+    allowRemoteSetup !== undefined ||
+    secureCookieMode !== undefined ||
+    allowedOrigins !== undefined;
+  if (updatingSecuritySettings && !hasPermission(req.user?.role, 'admin')) {
+    return res.status(403).json({ error: 'Admin permission required for security settings.' });
   }
 
   const nextLogPaths = [];
@@ -950,6 +1075,14 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
     ...settings,
     caddyfilePath: caddyfilePath || settings.caddyfilePath,
     logPaths: nextLogPaths,
+    trustProxyHops:
+      trustProxyHops === undefined ? settings.trustProxyHops : normalizeTrustProxyHops(trustProxyHops, settings.trustProxyHops),
+    allowRemoteSetup:
+      allowRemoteSetup === undefined ? settings.allowRemoteSetup : normalizeBoolean(allowRemoteSetup, settings.allowRemoteSetup),
+    secureCookieMode:
+      secureCookieMode === undefined ? settings.secureCookieMode : normalizeCookieMode(secureCookieMode, settings.secureCookieMode),
+    allowedOrigins:
+      allowedOrigins === undefined ? settings.allowedOrigins : normalizeAllowedOrigins(allowedOrigins),
   };
   await saveSettings(next);
   res.json({ settings: publicSettings(next, req.user.username) });
@@ -1094,6 +1227,8 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(dist));
   app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
+
+loadSettings().catch(() => {});
 
 app.listen(PORT, () => {
   console.log(`CaddyUI API listening on :${PORT}`);

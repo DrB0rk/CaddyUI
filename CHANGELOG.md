@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.5-dev - 2026-05-11
+
+### Added
+- Security settings in the Settings page:
+  - trusted proxy hops
+  - cookie mode (`auto`, `secure`, `insecure`)
+  - allow remote first-time setup toggle
+  - additional allowed origins list
+
+### Changed
+- Security-related runtime behavior now follows saved settings without requiring env-only configuration.
+- Settings and status API responses now include security configuration fields.
+
+### Security
+- Editing security settings now requires `admin` permission.
+- Trusted forward headers are only used when trusted proxy hops are enabled.
+
 ## 0.1.4 - 2026-05-11
 
 ### Added
