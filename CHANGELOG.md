@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.8-beta - 2026-05-11
+
+### Added
+- Full-screen update progress overlay that stays visible until the new app version is ready.
+- SQLite-backed proxy metadata table for tags and categories.
+
+### Changed
+- Tags and category are no longer written into Caddyfile comments for proxy create/edit.
+- Proxy rows on mobile now use a clearer label/value layout with more reliable action button visibility.
+
+### Fixed
+- Update flow now waits for branch/commit/version readiness checks before reporting success.
+
 ## 0.1.7-beta - 2026-05-11
 
 ### Added
