@@ -1,5 +1,5 @@
 import React, { memo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, FileCode2, KeyRound, Layers3, Loader2, Menu, ScrollText, ServerCog, Settings, Shield, SidebarClose } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileCode2, KeyRound, Layers3, Loader2, Menu, Moon, ScrollText, ServerCog, Settings, Shield, SidebarClose, Sun } from 'lucide-react';
 import { updateSimpleProxy } from '../../server/caddyParser.js';
 
 export const pageItems = [
@@ -14,8 +14,82 @@ export function Notice({ type = 'info', children }) {
   return <div className={`notice ${type}`}>{type === 'error' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}<span>{children}</span></div>;
 }
 
-export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion }) {
-  return <div className="app-shell"><header className="topbar"><div className="brand"><button className="icon-button" onClick={() => setCollapsed(!collapsed)}>{collapsed ? <Menu /> : <SidebarClose />}</button><span className="logo">CaddyUI</span><span className="app-version">v{appVersion}</span></div><div className="top-actions">{canEdit && <><button onClick={onValidateCaddy} disabled={caddyBusy}>Validate</button><button onClick={onConfirmReloadCaddy} disabled={caddyBusy}>Reload Caddy</button></>}<span className="pill"><Shield size={14} />{user || 'user'}</span><button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'}</button><button onClick={onLogout}>Logout</button></div></header><aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}><div>{pageItems.map(([id, Icon, label]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{label}</span></button>)}</div><div className="sidebar-footer"><div className="sidebar-meta"><span className="sidebar-version">v{appInfo?.version || appVersion}</span><span className={`sidebar-status ${appInfo?.updateAvailable ? 'update' : 'current'}`}>{updating ? 'Updating' : appInfo?.updateAvailable ? 'Update available' : 'Current'}</span></div><div className="sidebar-actions"><button type="button" onClick={onCheckUpdates} disabled={checkingUpdates || updating}>{checkingUpdates ? 'Checking...' : 'Check updates'}</button>{canUpdate && appInfo?.updateAvailable && <button type="button" className="primary" onClick={onRunUpdate} disabled={updating}>{updating ? 'Updating...' : 'Update now'}</button>}</div></div></aside><main className={`content ${collapsed ? 'wide' : ''}`}>{children}</main><nav className="mobile-nav">{pageItems.map(([id, Icon, label]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={18} /><span>{label}</span></button>)}</nav></div>;
+export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, actionResult, onDismissActionResult }) {
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <button className="icon-button" onClick={() => setCollapsed(!collapsed)}>
+            {collapsed ? <Menu /> : <SidebarClose />}
+          </button>
+          <span className="logo">CaddyUI</span>
+          <span className="app-version">v{appVersion}</span>
+        </div>
+        <div className="top-actions">
+          {canEdit && (
+            <>
+              <button onClick={onValidateCaddy} disabled={caddyBusy}>Validate</button>
+              <button onClick={onConfirmReloadCaddy} disabled={caddyBusy}>Reload Caddy</button>
+            </>
+          )}
+          <span className="pill"><Shield size={14} />{user || 'user'}</span>
+          <button
+            className="icon-button"
+            aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+            title={theme === 'light' ? 'Dark mode' : 'Light mode'}
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          >
+            {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+          </button>
+          <button onClick={onLogout}>Logout</button>
+        </div>
+      </header>
+      {actionResult && (
+        <div className={`top-feedback ${actionResult.ok ? 'success' : 'error'}`} role="status" aria-live="polite">
+          {actionResult.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+          <span>{actionResult.message}</span>
+          <button type="button" className="icon-button top-feedback-close" onClick={onDismissActionResult} aria-label="Dismiss message">×</button>
+        </div>
+      )}
+      <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+        <div>
+          {pageItems.map(([id, Icon, label]) => (
+            <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}>
+              <Icon size={20} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="sidebar-footer">
+          <div className="sidebar-meta">
+            <span className="sidebar-version">v{appInfo?.version || appVersion}</span>
+            <span className={`sidebar-status ${appInfo?.updateAvailable ? 'update' : 'current'}`}>
+              {updating ? 'Updating' : appInfo?.updateAvailable ? `Update v${appInfo?.availableVersion || appInfo?.remoteVersion || appInfo?.version || appVersion}` : 'Current'}
+            </span>
+          </div>
+          <div className="sidebar-actions">
+            <button type="button" onClick={onCheckUpdates} disabled={checkingUpdates || updating}>
+              {checkingUpdates ? 'Checking...' : 'Check updates'}
+            </button>
+            {canUpdate && appInfo?.updateAvailable && (
+              <button type="button" className="primary" onClick={onRunUpdate} disabled={updating}>
+                {updating ? 'Updating...' : `Update to v${appInfo?.availableVersion || appInfo?.remoteVersion || appInfo?.version || appVersion}`}
+              </button>
+            )}
+          </div>
+        </div>
+      </aside>
+      <main className={`content ${collapsed ? 'wide' : ''}`}>{children}</main>
+      <nav className="mobile-nav">
+        {pageItems.map(([id, Icon, label]) => (
+          <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}>
+            <Icon size={18} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
 }
 
 export function AuthGate({ status, onReady, api }) {
@@ -62,6 +136,13 @@ export const rootDomain = (address = '') => {
 };
 
 export const selectedImportNames = (value) => String(value || '').split(',').map((x) => x.trim()).filter(Boolean);
+export const selectedTagNames = (value) => {
+  const seen = new Set();
+  return String(value || '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+};
 export const normalizeLogging = (logging = {}) => ({ mode: logging?.mode || 'none', path: logging?.path || '' });
 
 export const findBlockRange = (content, line) => {
@@ -91,7 +172,7 @@ export const readBlockAtLine = (content, line) => {
 
 export const previewProxyBlock = (content, draft) => {
   try {
-    const next = updateSimpleProxy(content, { siteLine: draft.line, host: draft.host, upstream: draft.upstream, imports: selectedImportNames(draft.imports), logging: { mode: draft.logMode, path: draft.logPath } });
+    const next = updateSimpleProxy(content, { siteLine: draft.line, host: draft.host, upstream: draft.upstream, imports: selectedImportNames(draft.imports), logging: { mode: draft.logMode, path: draft.logPath }, tags: selectedTagNames(draft.tags), category: draft.category, disabled: Boolean(draft.disabled) });
     return readBlockAtLine(next, draft.line) || draft.rawBlock || '';
   } catch {
     return draft.rawBlock || '';
@@ -110,8 +191,32 @@ export function MiddlewarePicker({ snippets, value, onChange }) {
   return <div className="import-dropdown"><button type="button" className="import-dropdown-trigger" onClick={() => setOpen((v) => !v)}>{selected.length ? `${selected.length} selected` : 'Select imports'}</button>{open && <div className="import-dropdown-menu">{snippets.map((s) => <label key={s.name} className="import-option"><input type="checkbox" checked={selected.includes(s.name)} onChange={() => toggle(s.name)} /><span>{s.name}</span><small>{s.inferredType}</small></label>)}</div>}</div>;
 }
 
-export const StatusDot = ({ check }) => <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
+export const StatusDot = ({ check, disabled = false }) => {
+  if (disabled || check?.disabled) return <span className="status-dot disabled">disabled</span>;
+  return <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
+};
 
-export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete }) {
-  return <div className="proxy-row"><div className="proxy-row-main"><span className="proxy-host">{site.addresses.join(', ')}</span><span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span><StatusDot check={healthCheck} /><span className="proxy-mw">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span><div className="row-actions">{canEdit && <><button type="button" onClick={onEdit}>Edit</button><button type="button" className="danger" onClick={onDelete}>Delete</button></>}</div></div></div>;
+export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete, onToggleDisabled }) {
+  return (
+    <div className={`proxy-row ${site.disabled ? 'disabled' : ''}`}>
+      <div className="proxy-row-main">
+        <span className="proxy-host">{site.addresses.join(', ')}</span>
+        <span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
+        <StatusDot check={healthCheck} disabled={site.disabled} />
+        <span className={`proxy-state ${site.disabled ? 'disabled' : 'enabled'}`}>{site.disabled ? 'disabled' : 'enabled'}</span>
+        <span className="proxy-category">{site.category || 'none'}</span>
+        <span className="proxy-tags">{(site.tags || []).join(', ') || 'none'}</span>
+        <span className="proxy-mw">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
+        <div className="row-actions">
+          {canEdit && (
+            <>
+              <button type="button" onClick={onToggleDisabled}>{site.disabled ? 'Enable' : 'Disable'}</button>
+              <button type="button" onClick={onEdit}>Edit</button>
+              <button type="button" className="danger" onClick={onDelete}>Delete</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 });

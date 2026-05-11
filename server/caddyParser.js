@@ -13,11 +13,15 @@ const stripInlineComment = (line) => {
 
 const firstToken = (line) => line.trim().split(/\s+/)[0] || '';
 const normalizeAddress = (line) => line.replace(/\s*\{\s*$/, '').trim();
+const TAG_PREFIX_PATTERN = /^#\s*caddyui-tags\s*:\s*(.*)$/i;
+const CATEGORY_PREFIX_PATTERN = /^#\s*caddyui-category\s*:\s*(.*)$/i;
+const DISABLED_PREFIX_PATTERN = /^#\s*caddyui-disabled\s*:\s*(true|1|yes)\s*$/i;
+const DISABLED_PROXY_PREFIX_PATTERN = /^(\s*)#\s*caddyui-disabled-proxy\s?(.*)$/i;
 
-function findMatchingBrace(lines, startIndex) {
+function findMatchingBrace(lines, startIndex, normalizeLine = stripInlineComment) {
   let depth = 0;
   for (let i = startIndex; i < lines.length; i++) {
-    const clean = stripInlineComment(lines[i]);
+    const clean = normalizeLine(lines[i]);
     for (const char of clean) {
       if (char === '{') depth++;
       if (char === '}') depth--;
@@ -25,6 +29,26 @@ function findMatchingBrace(lines, startIndex) {
     if (depth === 0) return i;
   }
   return lines.length - 1;
+}
+
+function unmaskDisabledProxyLine(line = '') {
+  const match = String(line || '').match(DISABLED_PROXY_PREFIX_PATTERN);
+  if (!match) return line;
+  return `${match[1]}${match[2]}`;
+}
+
+function maskDisabledProxyLine(line = '') {
+  const plain = unmaskDisabledProxyLine(line);
+  const indent = plain.match(/^\s*/)?.[0] || '';
+  const content = plain.trimStart();
+  if (!content) return plain;
+  return `${indent}# caddyui-disabled-proxy ${content}`;
+}
+
+function disabledProxyDirective(line = '') {
+  const unmasked = unmaskDisabledProxyLine(line);
+  if (unmasked === line) return '';
+  return stripInlineComment(unmasked).trim();
 }
 
 function collectDirectives(lines, start, end) {
@@ -43,6 +67,82 @@ function collectImports(lines, start, end) {
   return collectDirectives(lines, start, end)
     .filter((d) => d.name === 'import')
     .map((d) => ({ name: d.args[0], args: d.args.slice(1), line: d.line }));
+}
+
+function normalizeTags(tags = []) {
+  const seen = new Set();
+  const values = Array.isArray(tags)
+    ? tags
+    : String(tags || '')
+        .split(',')
+        .map((x) => x.trim());
+  const normalized = [];
+  for (const value of values) {
+    const tag = String(value || '').trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(tag);
+  }
+  return normalized;
+}
+
+function normalizeCategory(value = '') {
+  return String(value || '')
+    .split(',')[0]
+    .trim();
+}
+
+function parseSiteTags(lines, start, end) {
+  const tags = [];
+  let depth = 0;
+  for (let i = start; i <= end; i++) {
+    const raw = lines[i];
+    const trimmed = String(raw || '').trim();
+    if (depth === 0) {
+      const match = trimmed.match(TAG_PREFIX_PATTERN);
+      if (match) tags.push(...match[1].split(',').map((x) => x.trim()));
+    }
+    for (const char of stripInlineComment(raw)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return normalizeTags(tags);
+}
+
+function parseSiteCategory(lines, start, end) {
+  let category = '';
+  let depth = 0;
+  for (let i = start; i <= end; i++) {
+    const raw = lines[i];
+    const trimmed = String(raw || '').trim();
+    if (depth === 0) {
+      const match = trimmed.match(CATEGORY_PREFIX_PATTERN);
+      if (match) category = normalizeCategory(match[1]);
+    }
+    for (const char of stripInlineComment(raw)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return category;
+}
+
+function parseSiteDisabled(lines, start, end) {
+  let disabled = false;
+  let depth = 0;
+  for (let i = start; i <= end; i++) {
+    const raw = lines[i];
+    const trimmed = String(raw || '').trim();
+    if (depth === 0 && DISABLED_PREFIX_PATTERN.test(trimmed)) disabled = true;
+    for (const char of stripInlineComment(raw)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return disabled;
 }
 
 function parseSiteLog(lines, start, end) {
@@ -99,7 +199,7 @@ function parseNamedMatchers(lines, start, end) {
   return matchers;
 }
 
-function parseProxyFromLine(line, lineNumber, blockLines = [], endLine = lineNumber) {
+function parseProxyFromLine(line, lineNumber, blockLines = [], endLine = lineNumber, disabled = false) {
   const clean = stripInlineComment(line).replace(/\s*\{\s*$/, '').trim();
   const parts = clean.split(/\s+/);
   const idx = parts.indexOf('reverse_proxy');
@@ -111,7 +211,7 @@ function parseProxyFromLine(line, lineNumber, blockLines = [], endLine = lineNum
     .filter((d) => d.raw.startsWith('import '))
     .map((d) => ({ name: d.raw.split(/\s+/)[1], line: d.line }));
   const options = blockLines.map((l) => l.trim()).filter(Boolean);
-  return { matcher: maybeMatcher, upstreams, imports, options, line: lineNumber, endLine };
+  return { matcher: maybeMatcher, upstreams, imports, options, line: lineNumber, endLine, disabled };
 }
 
 function parseForwardAuthFromLine(line, lineNumber, blockLines = []) {
@@ -134,7 +234,10 @@ function scanBlocks(lines, start, end) {
   for (let i = start; i <= end; i++) {
     const raw = lines[i];
     const clean = stripInlineComment(raw).trim();
-    if (!clean || clean === '}') continue;
+    const disabledDirective = disabledProxyDirective(raw);
+    const effective = disabledDirective || clean;
+    const isDisabledProxy = Boolean(disabledDirective);
+    if (!effective || effective === '}') continue;
 
     if (/^handle\b/.test(clean) && clean.endsWith('{')) {
       const blockEnd = findMatchingBrace(lines, i);
@@ -145,16 +248,18 @@ function scanBlocks(lines, start, end) {
       continue;
     }
 
-    if (clean.includes('reverse_proxy')) {
+    if (effective.includes('reverse_proxy')) {
       let blockLines = [];
-      if (clean.endsWith('{')) {
-        const blockEnd = findMatchingBrace(lines, i);
-        blockLines = lines.slice(i + 1, blockEnd);
-        const proxy = parseProxyFromLine(raw, i + 1, blockLines, blockEnd + 1);
+      if (effective.endsWith('{')) {
+        const blockEnd = isDisabledProxy
+          ? findMatchingBrace(lines, i, (line) => stripInlineComment(unmaskDisabledProxyLine(line)))
+          : findMatchingBrace(lines, i);
+        blockLines = lines.slice(i + 1, blockEnd).map(unmaskDisabledProxyLine);
+        const proxy = parseProxyFromLine(effective, i + 1, blockLines, blockEnd + 1, isDisabledProxy);
         if (proxy) proxies.push(proxy);
         i = blockEnd;
       } else {
-        const proxy = parseProxyFromLine(raw, i + 1, [], i + 1);
+        const proxy = parseProxyFromLine(effective, i + 1, [], i + 1, isDisabledProxy);
         if (proxy) proxies.push(proxy);
       }
       continue;
@@ -211,7 +316,10 @@ export function parseCaddyfile(source = '') {
       } else {
         const addresses = header.split(',').map((x) => x.trim()).filter(Boolean);
         const logging = parseSiteLog(lines, bodyStart, bodyEnd);
-        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, logging, body });
+        const tags = parseSiteTags(lines, bodyStart, bodyEnd);
+        const category = parseSiteCategory(lines, bodyStart, bodyEnd);
+        const disabled = parseSiteDisabled(lines, bodyStart, bodyEnd) || (scan.proxies.length > 0 && scan.proxies.every((proxy) => proxy.disabled));
+        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, logging, tags, category, disabled, body });
       }
       i = end;
     } else if (clean.includes('{') && !clean.endsWith('{')) {
@@ -305,6 +413,38 @@ function removeTopLevelImports(lines) {
   return kept;
 }
 
+function removeTopLevelTags(lines) {
+  const kept = [];
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = String(line || '').trim();
+    if (!(depth === 0 && TAG_PREFIX_PATTERN.test(trimmed))) kept.push(line);
+    for (const char of stripInlineComment(line)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return kept;
+}
+
+function removeTopLevelCategory(lines) {
+  const kept = [];
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = String(line || '').trim();
+    if (!(depth === 0 && CATEGORY_PREFIX_PATTERN.test(trimmed))) kept.push(line);
+    for (const char of stripInlineComment(line)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return kept;
+}
+
+function removeDisabledMarker(lines) {
+  return lines.filter((line) => !DISABLED_PREFIX_PATTERN.test(String(line || '').trim()));
+}
+
 function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
   const next = [];
   let depth = 0;
@@ -341,23 +481,29 @@ function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
   return next;
 }
 
-export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {} }) {
+export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {}, tags = [], category = '', disabled = false }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   if (!safeHost || !safeUpstream) throw new Error('Host and upstream are required.');
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
+  const safeTags = normalizeTags(tags);
+  const safeCategory = normalizeCategory(category);
   const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
+  const categoryLine = safeCategory ? `\t# caddyui-category: ${safeCategory}` : '';
+  const tagLine = safeTags.length ? `\t# caddyui-tags: ${safeTags.join(', ')}` : '';
+  const disabledLine = disabled ? '\t# caddyui-disabled: true' : '';
   const logLines = formatLogLines('\t', logging).join('\n');
   const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
-  const proxyLine = proxyImportLines
+  const proxyBlock = proxyImportLines
     ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
     : `\treverse_proxy ${safeUpstream}`;
-  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
+  const proxyLine = disabled ? proxyBlock.split('\n').map(maskDisabledProxyLine).join('\n') : proxyBlock;
+  const block = `${safeHost} {\n${disabledLine ? `${disabledLine}\n` : ''}${categoryLine ? `${categoryLine}\n` : ''}${tagLine ? `${tagLine}\n` : ''}${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
   return `${source.trimEnd()}\n\n${block}`;
 }
 
 
-export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging }) {
+export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging, tags = [], category = '', disabled = false }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   const targetLine = Number(siteLine);
@@ -367,18 +513,58 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
   const end = findMatchingBrace(lines, start);
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
+  const safeTags = normalizeTags(tags);
+  const safeCategory = normalizeCategory(category);
   const bodyLines = lines.slice(start + 1, end);
-  const cleanedBody = removeTopLevelLog(removeTopLevelImports(bodyLines));
+  const cleanedBody = removeTopLevelLog(removeTopLevelImports(removeTopLevelTags(removeTopLevelCategory(removeDisabledMarker(bodyLines)))));
   const rewrittenBody = replaceFirstTopLevelReverseProxy(cleanedBody, safeUpstream, proxyImports);
   const indent = bodyLines.find((line) => line.trim())?.match(/^\s*/)?.[0] || '\t';
   const block = [
     `${safeHost} {`,
+    ...(disabled ? [`${indent}# caddyui-disabled: true`] : []),
+    ...(safeCategory ? [`${indent}# caddyui-category: ${safeCategory}`] : []),
+    ...(safeTags.length ? [`${indent}# caddyui-tags: ${safeTags.join(', ')}`] : []),
     ...siteImports.map((name) => `${indent}import ${name}`),
     ...formatLogLines(indent, logging),
-    ...rewrittenBody,
+    ...(disabled ? rewrittenBody.map(maskDisabledProxyLine) : rewrittenBody),
     '}',
   ];
   lines.splice(start, end - start + 1, ...block);
+  return lines.join('\n');
+}
+
+export function setProxyDisabled(source, { siteLine, disabled = true }) {
+  const targetLine = Number(siteLine);
+  if (!targetLine) throw new Error('Site line is required.');
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const start = targetLine - 1;
+  if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
+  let end = findMatchingBrace(lines, start);
+  const indent = lines.slice(start + 1, end).find((line) => line.trim())?.match(/^\s*/)?.[0] || '\t';
+
+  for (let i = start + 1; i < end; i++) {
+    if (DISABLED_PREFIX_PATTERN.test(String(lines[i] || '').trim())) {
+      lines.splice(i, 1);
+      end -= 1;
+      i -= 1;
+    }
+  }
+
+  for (let i = start + 1; i < end; i++) {
+    const clean = stripInlineComment(unmaskDisabledProxyLine(lines[i])).trim();
+    if (!clean.includes('reverse_proxy')) continue;
+    if (clean.endsWith('{')) {
+      const blockEnd = findMatchingBrace(lines, i, (line) => stripInlineComment(unmaskDisabledProxyLine(line)));
+      for (let j = i; j <= blockEnd; j++) {
+        lines[j] = disabled ? maskDisabledProxyLine(lines[j]) : unmaskDisabledProxyLine(lines[j]);
+      }
+      i = blockEnd;
+    } else {
+      lines[i] = disabled ? maskDisabledProxyLine(lines[i]) : unmaskDisabledProxyLine(lines[i]);
+    }
+  }
+
+  if (disabled) lines.splice(start + 1, 0, `${indent}# caddyui-disabled: true`);
   return lines.join('\n');
 }
 
