@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 APP_NAME="CaddyUI"
-SCRIPT_CHANNEL="dev"
-INSTALLER_VERSION="2026.05.11-3"
+SCRIPT_CHANNEL="main"
+INSTALLER_VERSION="2026.05.11-1"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
 START_PORT="${CADDYUI_PORT:-8787}"
@@ -50,6 +50,12 @@ step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }
 ok() { printf "%b\n" "${GREEN}✓${NC} $*"; }
 warn() { printf "%b\n" "${YELLOW}!${NC} $*"; }
 fail() { printf "%b\n" "${RED}✗${NC} $*" >&2; exit 1; }
+app_version_from_dir() {
+  local dir="$1"
+  local package_json="$dir/package.json"
+  [[ -f "$package_json" ]] || { printf 'unknown'; return 0; }
+  node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(p.version||"unknown"));' "$package_json" 2>/dev/null || printf 'unknown'
+}
 run_quiet() {
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '[dry-run] %s\n' "$*" >> "$INSTALL_LOG"
@@ -60,46 +66,6 @@ run_quiet() {
 }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
-sqlite_runtime_ok() {
-  [[ -d "$INSTALL_DIR/node_modules/sqlite3" ]] || return 0
-  if [[ "$DRY_RUN" == "1" ]]; then return 0; fi
-  (cd "$INSTALL_DIR" && node -e "require('sqlite3'); process.exit(0)" >/dev/null 2>&1)
-}
-ensure_native_build_prereqs() {
-  local pm packages=()
-  pm="$(detect_package_manager)"
-  case "$pm" in
-    apt) packages=(build-essential python3 make g++ pkg-config libsqlite3-dev) ;;
-    dnf|yum) packages=(gcc-c++ make python3 pkgconf-pkg-config sqlite-devel) ;;
-    pacman) packages=(base-devel python sqlite) ;;
-    zypper) packages=(gcc-c++ make python3 pkg-config sqlite3-devel) ;;
-    apk) packages=(build-base python3 pkgconf sqlite-dev) ;;
-    brew) packages=(python sqlite) ;;
-    *) fail "No supported package manager found. Install build tools manually (gcc/g++ make python3 sqlite dev headers)." ;;
-  esac
-  if [[ "$IS_ROOT" -ne 1 && "$pm" != "brew" ]] && ! has_cmd sudo; then
-    fail "sudo is required to install build dependencies."
-  fi
-  warn "Installing native build dependencies for sqlite3: ${packages[*]}"
-  confirm "Install native build dependencies now?" yes || fail "Build dependencies are required for sqlite3 source build."
-  install_system_packages "$pm" "${packages[@]}"
-}
-ensure_sqlite_compat() {
-  [[ -d "$INSTALL_DIR/node_modules/sqlite3" ]] || return 0
-  step "Checking sqlite3 runtime compatibility"
-  if sqlite_runtime_ok; then
-    ok "sqlite3 module is compatible"
-    return 0
-  fi
-  warn "sqlite3 prebuilt binary is not compatible. Rebuilding from source."
-  ensure_native_build_prereqs
-  run_quiet npm --prefix "$INSTALL_DIR" rebuild sqlite3 --build-from-source
-  if sqlite_runtime_ok; then
-    ok "sqlite3 rebuilt for this system"
-    return 0
-  fi
-  fail "sqlite3 is still not compatible after source rebuild. Check $INSTALL_LOG"
-}
 confirm() {
   local prompt="$1"
   local default="${2:-no}"
@@ -497,6 +463,8 @@ run_existing_update() {
   run_quiet git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
   run_quiet git -C "$INSTALL_DIR" clean -fd
   ok "Source updated"
+  APP_VERSION="$(app_version_from_dir "$INSTALL_DIR")"
+  ok "Installing app version $APP_VERSION"
 
   step "Installing dependencies"
   if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
@@ -505,7 +473,6 @@ run_existing_update() {
     run_quiet npm --prefix "$INSTALL_DIR" install
   fi
   ok "Dependencies installed"
-  ensure_sqlite_compat
 
   step "Building web interface"
   run_quiet npm --prefix "$INSTALL_DIR" run build
@@ -522,7 +489,7 @@ run_existing_update() {
   fi
 
   if [[ -f "$INSTALL_DIR/.env" && -z "${CADDYUI_PORT:-}" ]]; then
-    existing_port="$(awk -F= '$1=="CADDY_UI_PORT" {print $2}' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)"
+    existing_port="$(awk -F= '$1==\"CADDY_UI_PORT\" {print $2}' \"$INSTALL_DIR/.env\" 2>/dev/null | tail -1)"
     [[ -n "$existing_port" ]] && PORT="$existing_port"
   fi
   PORT="${PORT:-$START_PORT}"
@@ -577,6 +544,8 @@ else
 fi
 if [[ "$DRY_RUN" == "1" ]]; then mkdir -p "$INSTALL_DIR"; fi
 ok "Source is ready"
+APP_VERSION="$(app_version_from_dir "$INSTALL_DIR")"
+ok "Installing app version $APP_VERSION"
 
 step "Installing dependencies"
 if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
@@ -585,7 +554,6 @@ else
   run_quiet npm --prefix "$INSTALL_DIR" install
 fi
 ok "Dependencies installed"
-ensure_sqlite_compat
 
 step "Building web interface"
 run_quiet npm --prefix "$INSTALL_DIR" run build
