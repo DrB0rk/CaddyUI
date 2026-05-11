@@ -1,22 +1,5 @@
 # Changelog
 
-## 0.1.4 - 2026-05-11
-
-### Added
-- SQLite file database for settings/session state and parsed config cache.
-- Proxy category support (single category per proxy).
-- Proxies view mode switcher (sections by domain or by category).
-- Dynamic while-typing autocomplete for proxy category and tags.
-
-### Changed
-- Proxy sorting moved to clickable table headers with direction indicators.
-- Default proxy sorting set to host A-Z.
-- Proxies table column naming and layout consistency updates.
-
-### Fixed
-- View selector alignment/spacing in the proxies toolbar.
-- Top-level feedback visibility via fixed header popup.
-
 ## 0.1.3 - 2026-05-11
 
 ### Added

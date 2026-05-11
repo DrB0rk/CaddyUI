@@ -13,8 +13,6 @@ const stripInlineComment = (line) => {
 
 const firstToken = (line) => line.trim().split(/\s+/)[0] || '';
 const normalizeAddress = (line) => line.replace(/\s*\{\s*$/, '').trim();
-const TAG_PREFIX_PATTERN = /^#\s*caddyui-tags\s*:\s*(.*)$/i;
-const CATEGORY_PREFIX_PATTERN = /^#\s*caddyui-category\s*:\s*(.*)$/i;
 
 function findMatchingBrace(lines, startIndex) {
   let depth = 0;
@@ -45,67 +43,6 @@ function collectImports(lines, start, end) {
   return collectDirectives(lines, start, end)
     .filter((d) => d.name === 'import')
     .map((d) => ({ name: d.args[0], args: d.args.slice(1), line: d.line }));
-}
-
-function normalizeTags(tags = []) {
-  const seen = new Set();
-  const values = Array.isArray(tags)
-    ? tags
-    : String(tags || '')
-        .split(',')
-        .map((x) => x.trim());
-  const normalized = [];
-  for (const value of values) {
-    const tag = String(value || '').trim();
-    if (!tag) continue;
-    const key = tag.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    normalized.push(tag);
-  }
-  return normalized;
-}
-
-function normalizeCategory(value = '') {
-  return String(value || '')
-    .split(',')[0]
-    .trim();
-}
-
-function parseSiteTags(lines, start, end) {
-  const tags = [];
-  let depth = 0;
-  for (let i = start; i <= end; i++) {
-    const raw = lines[i];
-    const trimmed = String(raw || '').trim();
-    if (depth === 0) {
-      const match = trimmed.match(TAG_PREFIX_PATTERN);
-      if (match) tags.push(...match[1].split(',').map((x) => x.trim()));
-    }
-    for (const char of stripInlineComment(raw)) {
-      if (char === '{') depth++;
-      if (char === '}') depth--;
-    }
-  }
-  return normalizeTags(tags);
-}
-
-function parseSiteCategory(lines, start, end) {
-  let category = '';
-  let depth = 0;
-  for (let i = start; i <= end; i++) {
-    const raw = lines[i];
-    const trimmed = String(raw || '').trim();
-    if (depth === 0) {
-      const match = trimmed.match(CATEGORY_PREFIX_PATTERN);
-      if (match) category = normalizeCategory(match[1]);
-    }
-    for (const char of stripInlineComment(raw)) {
-      if (char === '{') depth++;
-      if (char === '}') depth--;
-    }
-  }
-  return category;
 }
 
 function parseSiteLog(lines, start, end) {
@@ -274,9 +211,7 @@ export function parseCaddyfile(source = '') {
       } else {
         const addresses = header.split(',').map((x) => x.trim()).filter(Boolean);
         const logging = parseSiteLog(lines, bodyStart, bodyEnd);
-        const tags = parseSiteTags(lines, bodyStart, bodyEnd);
-        const category = parseSiteCategory(lines, bodyStart, bodyEnd);
-        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, logging, tags, category, body });
+        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, logging, body });
       }
       i = end;
     } else if (clean.includes('{') && !clean.endsWith('{')) {
@@ -370,34 +305,6 @@ function removeTopLevelImports(lines) {
   return kept;
 }
 
-function removeTopLevelTags(lines) {
-  const kept = [];
-  let depth = 0;
-  for (const line of lines) {
-    const trimmed = String(line || '').trim();
-    if (!(depth === 0 && TAG_PREFIX_PATTERN.test(trimmed))) kept.push(line);
-    for (const char of stripInlineComment(line)) {
-      if (char === '{') depth++;
-      if (char === '}') depth--;
-    }
-  }
-  return kept;
-}
-
-function removeTopLevelCategory(lines) {
-  const kept = [];
-  let depth = 0;
-  for (const line of lines) {
-    const trimmed = String(line || '').trim();
-    if (!(depth === 0 && CATEGORY_PREFIX_PATTERN.test(trimmed))) kept.push(line);
-    for (const char of stripInlineComment(line)) {
-      if (char === '{') depth++;
-      if (char === '}') depth--;
-    }
-  }
-  return kept;
-}
-
 function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
   const next = [];
   let depth = 0;
@@ -434,27 +341,23 @@ function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
   return next;
 }
 
-export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {}, tags = [], category = '' }) {
+export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {} }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   if (!safeHost || !safeUpstream) throw new Error('Host and upstream are required.');
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
-  const safeTags = normalizeTags(tags);
-  const safeCategory = normalizeCategory(category);
   const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
-  const categoryLine = safeCategory ? `\t# caddyui-category: ${safeCategory}` : '';
-  const tagLine = safeTags.length ? `\t# caddyui-tags: ${safeTags.join(', ')}` : '';
   const logLines = formatLogLines('\t', logging).join('\n');
   const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
   const proxyLine = proxyImportLines
     ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
     : `\treverse_proxy ${safeUpstream}`;
-  const block = `${safeHost} {\n${categoryLine ? `${categoryLine}\n` : ''}${tagLine ? `${tagLine}\n` : ''}${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
+  const block = `${safeHost} {\n${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
   return `${source.trimEnd()}\n\n${block}`;
 }
 
 
-export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging, tags = [], category = '' }) {
+export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   const targetLine = Number(siteLine);
@@ -464,16 +367,12 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
   const end = findMatchingBrace(lines, start);
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
-  const safeTags = normalizeTags(tags);
-  const safeCategory = normalizeCategory(category);
   const bodyLines = lines.slice(start + 1, end);
-  const cleanedBody = removeTopLevelLog(removeTopLevelImports(removeTopLevelTags(removeTopLevelCategory(bodyLines))));
+  const cleanedBody = removeTopLevelLog(removeTopLevelImports(bodyLines));
   const rewrittenBody = replaceFirstTopLevelReverseProxy(cleanedBody, safeUpstream, proxyImports);
   const indent = bodyLines.find((line) => line.trim())?.match(/^\s*/)?.[0] || '\t';
   const block = [
     `${safeHost} {`,
-    ...(safeCategory ? [`${indent}# caddyui-category: ${safeCategory}`] : []),
-    ...(safeTags.length ? [`${indent}# caddyui-tags: ${safeTags.join(', ')}`] : []),
     ...siteImports.map((name) => `${indent}import ${name}`),
     ...formatLogLines(indent, logging),
     ...rewrittenBody,

@@ -8,7 +8,7 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import {
@@ -19,7 +19,6 @@ import {
   updateSnippet,
   deleteBlockAtLine,
 } from './caddyParser.js';
-import { createStateStore } from './stateStore.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -28,7 +27,6 @@ const PORT = Number(process.env.CADDY_UI_PORT || process.env.PORT || 8787);
 const ROOT = process.cwd();
 const APP_VERSION = JSON.parse(fssync.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 const DATA_DIR = process.env.CADDY_UI_DATA_DIR || path.join(ROOT, 'data');
-const DB_PATH = process.env.CADDY_UI_DB_PATH || path.join(DATA_DIR, 'caddyui.db');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 const SESSION_PATH = path.join(DATA_DIR, 'sessions.json');
 const DEFAULT_SECRET = 'dev-change-me-caddy-ui';
@@ -72,19 +70,6 @@ const COMMON_LOGS = [
   '/data/caddy/logs/access.log',
   '/config/log/caddy.log',
 ].filter(Boolean);
-const UPDATE_CHANNELS = new Set(['stable', 'beta', 'dev']);
-const UPDATE_BRANCH = {
-  stable: 'main',
-  beta: 'beta',
-  dev: 'dev',
-};
-const stateStore = createStateStore({
-  dataDir: DATA_DIR,
-  dbPath: DB_PATH,
-  settingsPath: SETTINGS_PATH,
-  sessionPath: SESSION_PATH,
-  fileMode: 0o600,
-});
 
 if (IS_PRODUCTION && (JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32)) {
   throw new Error('Set CADDY_UI_SECRET to a strong value.');
@@ -217,6 +202,14 @@ function clearAttempts(key) {
   loginAttempts.delete(key);
 }
 
+function settingsFileMode() {
+  return 0o600;
+}
+
+async function ensureDataDir() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+}
+
 function normalizeUser(user, fallbackRole = 'view') {
   if (!user) return null;
   return {
@@ -239,7 +232,6 @@ function normalizeSettings(settings) {
     configured: Boolean(base.configured),
     caddyfilePath: base.caddyfilePath || '',
     logPaths: Array.isArray(base.logPaths) ? base.logPaths : COMMON_LOGS,
-    updateChannel: UPDATE_CHANNELS.has(base.updateChannel) ? base.updateChannel : 'stable',
     users,
   };
 }
@@ -284,15 +276,21 @@ function adminCount(settings) {
 }
 
 async function loadSettings() {
-  const store = await stateStore;
-  const raw = await store.getJson('settings', null);
-  if (!raw) return normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
-  return normalizeSettings(raw);
+  await ensureDataDir();
+  try {
+    return normalizeSettings(JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8')));
+  } catch {
+    return normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
+  }
 }
 
 async function saveSettings(settings) {
-  const store = await stateStore;
-  await store.setJson('settings', normalizeSettings(settings));
+  await ensureDataDir();
+  const normalized = normalizeSettings(settings);
+  await fs.writeFile(SETTINGS_PATH, JSON.stringify(normalized, null, 2), { mode: settingsFileMode() });
+  try {
+    await fs.chmod(SETTINGS_PATH, settingsFileMode());
+  } catch {}
 }
 
 function publicSettings(settings, currentUsername = '') {
@@ -304,7 +302,6 @@ function publicSettings(settings, currentUsername = '') {
     configured: Boolean(normalized.configured && normalized.users.length > 0 && normalized.caddyfilePath),
     caddyfilePath: normalized.caddyfilePath || '',
     logPaths: normalized.logPaths || COMMON_LOGS,
-    updateChannel: normalized.updateChannel || 'stable',
     username: currentUser?.username || '',
     role: currentUser?.role || '',
   };
@@ -322,34 +319,24 @@ function statusSettings(settings, authenticated, currentUsername = '') {
     role: authenticated ? currentUser?.role || '' : '',
   };
   if (!authenticated) return { ...base, caddyfilePath: '', logPaths: [] };
-  return {
-    ...base,
-    caddyfilePath: normalized.caddyfilePath || '',
-    logPaths: normalized.logPaths || COMMON_LOGS,
-    updateChannel: normalized.updateChannel || 'stable',
-  };
-}
-
-function updateTargetFromSettings(settings, currentBranch = 'unknown') {
-  const normalized = normalizeSettings(settings);
-  const channel = normalized.updateChannel || 'stable';
-  if (UPDATE_CHANNELS.has(channel)) {
-    return { channel, branch: UPDATE_BRANCH[channel] };
-  }
-  if (currentBranch === 'dev' || currentBranch === 'beta') {
-    return { channel: currentBranch, branch: currentBranch };
-  }
-  return { channel: 'stable', branch: UPDATE_BRANCH.stable };
+  return { ...base, caddyfilePath: normalized.caddyfilePath || '', logPaths: normalized.logPaths || COMMON_LOGS };
 }
 
 async function loadSessionState() {
-  const store = await stateStore;
-  return (await store.getJson('sessions', { revoked: {} })) || { revoked: {} };
+  await ensureDataDir();
+  try {
+    return JSON.parse(await fs.readFile(SESSION_PATH, 'utf8'));
+  } catch {
+    return { revoked: {} };
+  }
 }
 
 async function saveSessionState(state) {
-  const store = await stateStore;
-  await store.setJson('sessions', state);
+  await ensureDataDir();
+  await fs.writeFile(SESSION_PATH, JSON.stringify(state, null, 2), { mode: settingsFileMode() });
+  try {
+    await fs.chmod(SESSION_PATH, settingsFileMode());
+  } catch {}
 }
 
 function pruneRevoked(state) {
@@ -584,55 +571,26 @@ async function validateConfig(content) {
   return result;
 }
 
-
-async function parseConfigCached(content) {
-  const hash = createHash('sha256').update(String(content || ''), 'utf8').digest('hex');
-  const store = await stateStore;
-  const cached = await store.getParsed(hash);
-  if (cached) return cached;
-  const parsed = parseCaddyfile(content);
-  await store.setParsed(hash, parsed);
-  if (Math.random() < 0.05) await store.pruneParsed(300);
-  return parsed;
-}
-
 async function appBranch() {
   const result = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT });
   return result.ok ? result.stdout.trim() : 'unknown';
 }
 
 async function appUpdateStatus(fetchRemote = false) {
-  const currentBranch = await appBranch();
-  const settings = await loadSettings();
-  const { channel, branch: targetBranch } = updateTargetFromSettings(settings, currentBranch);
+  const branch = await appBranch();
   const head = await run('git', ['rev-parse', 'HEAD'], { cwd: ROOT });
-  if (fetchRemote && targetBranch !== 'unknown') {
-    await run('git', ['fetch', '--quiet', 'origin', targetBranch], { cwd: ROOT });
+  if (fetchRemote && branch !== 'unknown') {
+    await run('git', ['fetch', '--quiet', 'origin', branch], { cwd: ROOT });
   }
-  const remoteHead = targetBranch === 'unknown' ? { ok: false, stdout: '' } : await run('git', ['rev-parse', `origin/${targetBranch}`], { cwd: ROOT });
+  const remoteHead = branch === 'unknown' ? { ok: false, stdout: '' } : await run('git', ['rev-parse', `origin/${branch}`], { cwd: ROOT });
   const localCommit = head.ok ? head.stdout.trim() : '';
   const remoteCommit = remoteHead.ok ? remoteHead.stdout.trim() : '';
-  let remoteVersion = APP_VERSION;
-  if (targetBranch !== 'unknown') {
-    const remotePkg = await run('git', ['show', `origin/${targetBranch}:package.json`], { cwd: ROOT });
-    if (remotePkg.ok) {
-      try {
-        remoteVersion = JSON.parse(remotePkg.stdout).version || APP_VERSION;
-      } catch {}
-    }
-  }
-  const updateAvailable = Boolean(localCommit && remoteCommit && localCommit !== remoteCommit);
   return {
     version: APP_VERSION,
-    localVersion: APP_VERSION,
-    remoteVersion,
-    availableVersion: updateAvailable ? remoteVersion : APP_VERSION,
-    branch: targetBranch,
-    updateChannel: channel,
-    currentBranch,
+    branch,
     localCommit,
     remoteCommit,
-    updateAvailable,
+    updateAvailable: Boolean(localCommit && remoteCommit && localCommit !== remoteCommit),
   };
 }
 
@@ -725,7 +683,7 @@ app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
 app.get('/api/config', auth, requirePermission('view'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
-    const parsed = await parseConfigCached(content);
+    const parsed = parseCaddyfile(content);
     const includeHealth = String(req.query.health || '0') === '1';
     res.json({
       path: settings.caddyfilePath,
@@ -747,7 +705,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     if (validate) {
       const validation = await validateConfig(content);
       if (!validation.ok) {
-        return res.status(400).json({ error: 'Caddy validation failed.', validation, parsed: await parseConfigCached(content) });
+        return res.status(400).json({ error: 'Caddy validation failed.', validation, parsed: parseCaddyfile(content) });
       }
     }
 
@@ -757,7 +715,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     } catch {}
 
     await fs.writeFile(settings.caddyfilePath, content, 'utf8');
-    res.json({ ok: true, backup, parsed: await parseConfigCached(content) });
+    res.json({ ok: true, backup, parsed: parseCaddyfile(content) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -766,7 +724,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
 app.get('/api/proxies/health', auth, requirePermission('view'), async (_req, res) => {
   try {
     const { content } = await readConfiguredCaddyfile();
-    const parsed = await parseConfigCached(content);
+    const parsed = parseCaddyfile(content);
     res.json({ health: await checkProxyHealth(parsed) });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -796,10 +754,10 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
     const next = appendSimpleProxy(content, req.body || {});
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    const parsed = parseCaddyfile(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -812,10 +770,10 @@ app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edi
     const next = updateSimpleProxy(content, { ...req.body, siteLine: req.params.line });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    const parsed = parseCaddyfile(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -828,10 +786,10 @@ app.delete('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    const parsed = parseCaddyfile(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -844,10 +802,10 @@ app.post('/api/middlewares', requireTrustedOrigin, auth, requirePermission('edit
     const next = appendSnippet(content, req.body || {});
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -859,10 +817,10 @@ app.put('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermission(
     const next = updateSnippet(content, { ...req.body, line: req.params.line });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -874,10 +832,10 @@ app.delete('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermissi
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: parseCaddyfile(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: parseCaddyfile(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -915,20 +873,6 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
     ...settings,
     caddyfilePath: caddyfilePath || settings.caddyfilePath,
     logPaths: nextLogPaths,
-  };
-  await saveSettings(next);
-  res.json({ settings: publicSettings(next, req.user.username) });
-});
-
-app.put('/api/settings/update-channel', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
-  const settings = await loadSettings();
-  const channel = String(req.body?.updateChannel || '').trim().toLowerCase();
-  if (!UPDATE_CHANNELS.has(channel)) {
-    return res.status(400).json({ error: 'Invalid update channel.' });
-  }
-  const next = {
-    ...settings,
-    updateChannel: channel,
   };
   await saveSettings(next);
   res.json({ settings: publicSettings(next, req.user.username) });
@@ -1032,14 +976,8 @@ app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission
 });
 
 app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (_req, res) => {
-  const currentBranch = await appBranch();
-  const settings = await loadSettings();
-  const { branch } = updateTargetFromSettings(settings, currentBranch);
-  const scriptPath = path.join(ROOT, 'scripts', 'install.sh');
-  if (!fssync.existsSync(scriptPath)) {
-    return res.status(500).json({ error: 'Installer script not found.' });
-  }
-  const child = spawn('bash', [scriptPath], {
+  const branch = await appBranch();
+  const child = spawn('bash', ['scripts/update.sh'], {
     cwd: ROOT,
     env: { ...process.env, CADDYUI_BRANCH: branch, CADDYUI_ASSUME_YES: '1' },
     detached: true,
