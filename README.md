@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.svg" alt="CaddyUI logo" width="96" height="96">
+</p>
+
 # CaddyUI
 
 Manage your Caddyfile in a UI so you can stop speedrunning YAML-adjacent stress.
@@ -39,6 +43,12 @@ Running the same command again = update mode.
 - User auth + roles (`view`, `edit`, `admin`)
 - Onboarding with Caddyfile/log discovery
 
+## Looks like this
+
+<p align="center">
+  <img src="docs/images/screenshot.png" alt="CaddyUI screenshot" width="100%">
+</p>
+
 ## Onboarding flow
 
 1. Create admin user
@@ -66,6 +76,9 @@ caddyui.example.com {
 
 - Repo: https://github.com/DrB0rk/CaddyUI
 - Releases: https://github.com/DrB0rk/CaddyUI/releases
+- Issues: https://github.com/DrB0rk/CaddyUI/issues
+- Security policy: https://github.com/DrB0rk/CaddyUI/blob/main/docs/SECURITY.md
+- Contributing: https://github.com/DrB0rk/CaddyUI/blob/main/docs/CONTRIBUTING.md
 - Stable installer: https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh
 - Beta installer: https://raw.githubusercontent.com/DrB0rk/CaddyUI/beta/scripts/install.sh
 - Dev installer: https://raw.githubusercontent.com/DrB0rk/CaddyUI/dev/scripts/install.sh
