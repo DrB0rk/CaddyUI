@@ -124,5 +124,66 @@ export default function App() {
     }
   };
 
-  return <Shell page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} user={settings.username} onLogout={logout} theme={theme} setTheme={setTheme} appInfo={appInfo} onCheckUpdates={checkUpdates} onRunUpdate={runUpdate} canUpdate={canAdmin} checkingUpdates={checkingUpdates} updating={updating} canEdit={canEdit} onValidateCaddy={validateCaddyGlobal} onConfirmReloadCaddy={() => setReloadConfirmOpen(true)} caddyBusy={caddyBusy} appVersion={APP_VERSION}>{error && <Notice type="error">{error}</Notice>}{actionResult && <Notice type={actionResult.ok ? 'success' : 'error'}>{actionResult.message}</Notice>}{page === 'proxies' && <Proxies config={config} refresh={refreshConfig} setConfig={setConfig} canEdit={canEdit} theme={theme} health={health} loading={configLoading} api={api} />}{page === 'middlewares' && <Middlewares config={config} setConfig={setConfig} canEdit={canEdit} theme={theme} api={api} />}{page === 'configuration' && <Configuration config={config} setConfig={setConfig} refresh={refreshConfig} canEdit={canEdit} theme={theme} api={api} />}{page === 'logs' && <Logs api={api} />}{page === 'settings' && <SettingsPage settings={settings} setSettings={setSettings} canEdit={canEdit} canAdmin={canAdmin} api={api} />}<ReloadConfirmModal open={reloadConfirmOpen} busy={caddyBusy} onCancel={() => setReloadConfirmOpen(false)} onConfirm={reloadCaddyGlobal} /></Shell>;
+  return (
+    <Shell
+      page={page}
+      setPage={setPage}
+      collapsed={collapsed}
+      setCollapsed={setCollapsed}
+      user={settings.username}
+      onLogout={logout}
+      theme={theme}
+      setTheme={setTheme}
+      appInfo={appInfo}
+      onCheckUpdates={checkUpdates}
+      onRunUpdate={runUpdate}
+      canUpdate={canAdmin}
+      checkingUpdates={checkingUpdates}
+      updating={updating}
+      canEdit={canEdit}
+      onValidateCaddy={validateCaddyGlobal}
+      onConfirmReloadCaddy={() => setReloadConfirmOpen(true)}
+      caddyBusy={caddyBusy}
+      appVersion={APP_VERSION}
+      actionResult={actionResult}
+      onDismissActionResult={() => setActionResult(null)}
+    >
+      {error && <Notice type="error">{error}</Notice>}
+      {page === 'proxies' && (
+        <Proxies
+          config={config}
+          refresh={refreshConfig}
+          setConfig={setConfig}
+          canEdit={canEdit}
+          theme={theme}
+          health={health}
+          loading={configLoading}
+          api={api}
+        />
+      )}
+      {page === 'middlewares' && (
+        <Middlewares config={config} setConfig={setConfig} canEdit={canEdit} theme={theme} api={api} />
+      )}
+      {page === 'configuration' && (
+        <Configuration
+          config={config}
+          setConfig={setConfig}
+          refresh={refreshConfig}
+          canEdit={canEdit}
+          theme={theme}
+          api={api}
+        />
+      )}
+      {page === 'logs' && <Logs api={api} />}
+      {page === 'settings' && (
+        <SettingsPage settings={settings} setSettings={setSettings} canEdit={canEdit} canAdmin={canAdmin} api={api} />
+      )}
+      <ReloadConfirmModal
+        open={reloadConfirmOpen}
+        busy={caddyBusy}
+        onCancel={() => setReloadConfirmOpen(false)}
+        onConfirm={reloadCaddyGlobal}
+      />
+    </Shell>
+  );
 }

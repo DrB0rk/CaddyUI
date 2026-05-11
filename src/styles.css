@@ -126,6 +126,48 @@ select:focus {
   padding: 0 18px;
 }
 
+.top-feedback {
+  position: fixed;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  width: min(860px, calc(100vw - 24px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 10px 28px var(--shadow);
+}
+
+.top-feedback.success {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+}
+
+.top-feedback.error {
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+}
+
+.top-feedback span {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-feedback-close {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
 .brand,
 .top-actions {
   display: flex;
@@ -341,6 +383,13 @@ label {
   gap: 6px;
 }
 
+.toolbar > label {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
 .notice {
   display: flex;
   gap: 10px;
@@ -402,6 +451,40 @@ label {
   max-width: 420px;
 }
 
+.autocomplete-field {
+  position: relative;
+}
+
+.autocomplete-menu {
+  position: absolute;
+  z-index: 14;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 12px 28px var(--shadow);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.autocomplete-item {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 7px 8px;
+  min-height: 0;
+}
+
+.autocomplete-item:hover {
+  background: var(--accent-soft);
+}
+
 .quick-add,
 .middleware-form {
   padding: 10px;
@@ -411,7 +494,7 @@ label {
 }
 
 .quick-add {
-  grid-template-columns: minmax(240px, 0.9fr) minmax(280px, 1fr) minmax(220px, 0.8fr) auto;
+  grid-template-columns: minmax(190px, 0.9fr) minmax(220px, 1fr) minmax(150px, 0.7fr) minmax(190px, 0.9fr) minmax(170px, 0.7fr) auto;
 }
 
 .quick-add input {
@@ -458,7 +541,7 @@ label {
 .proxy-table-head,
 .proxy-row-main {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 76px minmax(0, 0.9fr) 148px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 76px minmax(0, 0.85fr) minmax(0, 0.9fr) minmax(0, 0.9fr) 148px;
   column-gap: 10px;
   align-items: center;
 }
@@ -469,6 +552,24 @@ label {
   color: var(--muted);
   font-size: 12px;
   font-weight: 750;
+}
+
+.proxy-table-head .table-sort {
+  justify-content: flex-start;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.proxy-table-head .table-sort:hover,
+.proxy-table-head .table-sort.active {
+  color: var(--text);
+  background: transparent;
 }
 
 .proxy-row {
@@ -492,7 +593,7 @@ label {
 
 .proxy-row-skeleton {
   display: grid;
-  grid-template-columns: minmax(220px, 1.25fr) minmax(220px, 1fr) 76px minmax(180px, 0.9fr) 132px;
+  grid-template-columns: minmax(220px, 1.25fr) minmax(220px, 1fr) 76px minmax(140px, 0.8fr) minmax(160px, 0.9fr) minmax(180px, 0.9fr) 132px;
   gap: 10px;
   padding: 8px 14px;
   border: 1px solid var(--line);
@@ -530,6 +631,8 @@ label {
 
 .proxy-host,
 .proxy-target,
+.proxy-category,
+.proxy-tags,
 .proxy-mw {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -667,6 +770,32 @@ label {
   border-top: 3px solid var(--bad);
 }
 
+.settings-collapsible summary {
+  cursor: pointer;
+  font-weight: 650;
+  list-style: none;
+}
+
+.settings-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-collapsible summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.settings-collapsible[open] summary::before {
+  content: '▾';
+}
+
+.settings-collapsible form {
+  margin-top: 12px;
+  display: grid;
+  gap: 14px;
+}
+
 .settings-message {
   margin: 0;
 }
@@ -763,7 +892,7 @@ label {
 
 @media (max-width: 1250px) {
   .quick-add {
-    grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr);
+    grid-template-columns: repeat(3, minmax(190px, 1fr));
   }
 }
 
@@ -775,10 +904,10 @@ label {
 
   .proxy-table-head,
   .proxy-row-main {
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) 72px minmax(0, 0.9fr) 148px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px minmax(0, 0.8fr) minmax(0, 0.9fr) minmax(0, 0.9fr) 148px;
   }
   .proxy-row-skeleton {
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) 72px minmax(0, 0.9fr) 148px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px minmax(0, 0.8fr) minmax(0, 0.9fr) minmax(0, 0.9fr) 148px;
   }
 
   .users-add {
@@ -799,6 +928,11 @@ label {
   .topbar {
     height: 56px;
     padding: 0 10px;
+  }
+
+  .top-feedback {
+    top: 60px;
+    width: calc(100vw - 14px);
   }
 
   .top-actions {
@@ -866,6 +1000,8 @@ label {
 
   .proxy-host,
   .proxy-target,
+  .proxy-category,
+  .proxy-tags,
   .proxy-mw {
     white-space: normal;
     overflow: visible;

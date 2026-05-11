@@ -251,25 +251,6 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
         {canEdit && <button className="primary">Save settings</button>}
       </form>
 
-      {canAdmin && (
-        <form className="settings-form settings-danger" onSubmit={saveUpdateChannel}>
-          <div className="settings-section-head">
-            <h3>Danger</h3>
-            <p>Set which release channel is used for update checks and installs.</p>
-          </div>
-          <label>
-            Update channel
-            <select value={updateChannel} onChange={(e) => setUpdateChannel(e.target.value)}>
-              <option value="stable">stable</option>
-              <option value="beta">beta</option>
-              <option value="dev">dev</option>
-            </select>
-          </label>
-          <p>Updates and update checks use this channel.</p>
-          <button className="danger">Save update channel</button>
-        </form>
-      )}
-
       <form className="settings-form" onSubmit={changePassword}>
         <div className="settings-section-head">
           <h3>Password</h3>
@@ -342,6 +323,28 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
             ))}
           </div>
         </div>
+      )}
+
+      {canAdmin && (
+        <details className="settings-form settings-danger settings-collapsible">
+          <summary>DANGER ZONE</summary>
+          <form onSubmit={saveUpdateChannel}>
+            <div className="settings-section-head">
+              <h3>Danger</h3>
+              <p>Set which release channel is used for update checks and installs.</p>
+            </div>
+            <label>
+              Update channel
+              <select value={updateChannel} onChange={(e) => setUpdateChannel(e.target.value)}>
+                <option value="stable">stable</option>
+                <option value="beta">beta</option>
+                <option value="dev">dev</option>
+              </select>
+            </label>
+            <p>Updates and update checks use this channel.</p>
+            <button className="danger">Save update channel</button>
+          </form>
+        </details>
       )}
 
       {msg && <p className="settings-message">{msg}</p>}
