@@ -50,6 +50,12 @@ step() { printf "%b\n" "${BLUE}▶${NC} ${BOLD}$*${NC}"; }
 ok() { printf "%b\n" "${GREEN}✓${NC} $*"; }
 warn() { printf "%b\n" "${YELLOW}!${NC} $*"; }
 fail() { printf "%b\n" "${RED}✗${NC} $*" >&2; exit 1; }
+app_version_from_dir() {
+  local dir="$1"
+  local package_json="$dir/package.json"
+  [[ -f "$package_json" ]] || { printf 'unknown'; return 0; }
+  node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(p.version||"unknown"));' "$package_json" 2>/dev/null || printf 'unknown'
+}
 run_quiet() {
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '[dry-run] %s\n' "$*" >> "$INSTALL_LOG"
@@ -457,6 +463,8 @@ run_existing_update() {
   run_quiet git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
   run_quiet git -C "$INSTALL_DIR" clean -fd
   ok "Source updated"
+  APP_VERSION="$(app_version_from_dir "$INSTALL_DIR")"
+  ok "Installing app version $APP_VERSION"
 
   step "Installing dependencies"
   if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
@@ -536,6 +544,8 @@ else
 fi
 if [[ "$DRY_RUN" == "1" ]]; then mkdir -p "$INSTALL_DIR"; fi
 ok "Source is ready"
+APP_VERSION="$(app_version_from_dir "$INSTALL_DIR")"
+ok "Installing app version $APP_VERSION"
 
 step "Installing dependencies"
 if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
