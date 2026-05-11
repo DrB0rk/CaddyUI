@@ -70,6 +70,12 @@ const COMMON_LOGS = [
   '/data/caddy/logs/access.log',
   '/config/log/caddy.log',
 ].filter(Boolean);
+const UPDATE_CHANNELS = new Set(['stable', 'beta', 'dev']);
+const UPDATE_BRANCH = {
+  stable: 'main',
+  beta: 'beta',
+  dev: 'dev',
+};
 
 if (IS_PRODUCTION && (JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32)) {
   throw new Error('Set CADDY_UI_SECRET to a strong value.');
@@ -232,6 +238,7 @@ function normalizeSettings(settings) {
     configured: Boolean(base.configured),
     caddyfilePath: base.caddyfilePath || '',
     logPaths: Array.isArray(base.logPaths) ? base.logPaths : COMMON_LOGS,
+    updateChannel: UPDATE_CHANNELS.has(base.updateChannel) ? base.updateChannel : 'stable',
     users,
   };
 }
@@ -302,6 +309,7 @@ function publicSettings(settings, currentUsername = '') {
     configured: Boolean(normalized.configured && normalized.users.length > 0 && normalized.caddyfilePath),
     caddyfilePath: normalized.caddyfilePath || '',
     logPaths: normalized.logPaths || COMMON_LOGS,
+    updateChannel: normalized.updateChannel || 'stable',
     username: currentUser?.username || '',
     role: currentUser?.role || '',
   };
@@ -319,7 +327,24 @@ function statusSettings(settings, authenticated, currentUsername = '') {
     role: authenticated ? currentUser?.role || '' : '',
   };
   if (!authenticated) return { ...base, caddyfilePath: '', logPaths: [] };
-  return { ...base, caddyfilePath: normalized.caddyfilePath || '', logPaths: normalized.logPaths || COMMON_LOGS };
+  return {
+    ...base,
+    caddyfilePath: normalized.caddyfilePath || '',
+    logPaths: normalized.logPaths || COMMON_LOGS,
+    updateChannel: normalized.updateChannel || 'stable',
+  };
+}
+
+function updateTargetFromSettings(settings, currentBranch = 'unknown') {
+  const normalized = normalizeSettings(settings);
+  const channel = normalized.updateChannel || 'stable';
+  if (UPDATE_CHANNELS.has(channel)) {
+    return { channel, branch: UPDATE_BRANCH[channel] };
+  }
+  if (currentBranch === 'dev' || currentBranch === 'beta') {
+    return { channel: currentBranch, branch: currentBranch };
+  }
+  return { channel: 'stable', branch: UPDATE_BRANCH.stable };
 }
 
 async function loadSessionState() {
@@ -577,20 +602,37 @@ async function appBranch() {
 }
 
 async function appUpdateStatus(fetchRemote = false) {
-  const branch = await appBranch();
+  const currentBranch = await appBranch();
+  const settings = await loadSettings();
+  const { channel, branch: targetBranch } = updateTargetFromSettings(settings, currentBranch);
   const head = await run('git', ['rev-parse', 'HEAD'], { cwd: ROOT });
-  if (fetchRemote && branch !== 'unknown') {
-    await run('git', ['fetch', '--quiet', 'origin', branch], { cwd: ROOT });
+  if (fetchRemote && targetBranch !== 'unknown') {
+    await run('git', ['fetch', '--quiet', 'origin', targetBranch], { cwd: ROOT });
   }
-  const remoteHead = branch === 'unknown' ? { ok: false, stdout: '' } : await run('git', ['rev-parse', `origin/${branch}`], { cwd: ROOT });
+  const remoteHead = targetBranch === 'unknown' ? { ok: false, stdout: '' } : await run('git', ['rev-parse', `origin/${targetBranch}`], { cwd: ROOT });
   const localCommit = head.ok ? head.stdout.trim() : '';
   const remoteCommit = remoteHead.ok ? remoteHead.stdout.trim() : '';
+  let remoteVersion = APP_VERSION;
+  if (targetBranch !== 'unknown') {
+    const remotePkg = await run('git', ['show', `origin/${targetBranch}:package.json`], { cwd: ROOT });
+    if (remotePkg.ok) {
+      try {
+        remoteVersion = JSON.parse(remotePkg.stdout).version || APP_VERSION;
+      } catch {}
+    }
+  }
+  const updateAvailable = Boolean(localCommit && remoteCommit && localCommit !== remoteCommit);
   return {
     version: APP_VERSION,
-    branch,
+    localVersion: APP_VERSION,
+    remoteVersion,
+    availableVersion: updateAvailable ? remoteVersion : APP_VERSION,
+    branch: targetBranch,
+    updateChannel: channel,
+    currentBranch,
     localCommit,
     remoteCommit,
-    updateAvailable: Boolean(localCommit && remoteCommit && localCommit !== remoteCommit),
+    updateAvailable,
   };
 }
 
@@ -878,6 +920,20 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
   res.json({ settings: publicSettings(next, req.user.username) });
 });
 
+app.put('/api/settings/update-channel', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
+  const settings = await loadSettings();
+  const channel = String(req.body?.updateChannel || '').trim().toLowerCase();
+  if (!UPDATE_CHANNELS.has(channel)) {
+    return res.status(400).json({ error: 'Invalid update channel.' });
+  }
+  const next = {
+    ...settings,
+    updateChannel: channel,
+  };
+  await saveSettings(next);
+  res.json({ settings: publicSettings(next, req.user.username) });
+});
+
 app.get('/api/users', auth, requirePermission('admin'), async (_req, res) => {
   const settings = await loadSettings();
   res.json({ users: normalizeSettings(settings).users.map(exposeUser) });
@@ -976,8 +1032,14 @@ app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission
 });
 
 app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (_req, res) => {
-  const branch = await appBranch();
-  const child = spawn('bash', ['scripts/update.sh'], {
+  const currentBranch = await appBranch();
+  const settings = await loadSettings();
+  const { branch } = updateTargetFromSettings(settings, currentBranch);
+  const scriptPath = path.join(ROOT, 'scripts', 'install.sh');
+  if (!fssync.existsSync(scriptPath)) {
+    return res.status(500).json({ error: 'Installer script not found.' });
+  }
+  const child = spawn('bash', [scriptPath], {
     cwd: ROOT,
     env: { ...process.env, CADDYUI_BRANCH: branch, CADDYUI_ASSUME_YES: '1' },
     detached: true,
