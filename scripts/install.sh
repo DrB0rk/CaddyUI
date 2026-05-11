@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 APP_NAME="CaddyUI"
-SCRIPT_CHANNEL="main"
+SCRIPT_CHANNEL="dev"
 INSTALLER_VERSION="2026.05.11-3"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"

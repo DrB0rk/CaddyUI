@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0-dev - 2026-05-11
+
+### Changed
+- Dev branch now reports `0.2.0-dev` and installer default channel `dev`.
+
 ## 0.2.0 - 2026-05-11
 
 ### Added
