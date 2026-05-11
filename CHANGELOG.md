@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0-beta - 2026-05-11
+
+### Added
+- Sidebar feedback shortcut that opens GitHub issue creation.
+
+### Changed
+- Header and sidebar version badges now prefer runtime version data during update flow.
+- Update completion message and UI version state are synchronized before reload.
+- Beta installer channel default now points to `beta`.
+
 ## 0.1.8 - 2026-05-11
 
 ### Added
