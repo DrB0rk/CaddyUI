@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7-beta - 2026-05-11
+
+### Added
+- Beta build with latest dev updates for proxy management, settings, and security controls.
+
+### Changed
+- README stable badge now tracks stable `v*` tags only.
+- Tag autocomplete now continues suggestions after commas.
+- Beta package version now reports `0.1.7-beta`.
+
 ## 0.1.5-dev - 2026-05-11
 
 ### Added
