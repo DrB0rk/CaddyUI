@@ -715,6 +715,112 @@ async function parseConfigCached(content) {
   return parsed;
 }
 
+function normalizeProxyTags(tags = []) {
+  const values = Array.isArray(tags)
+    ? tags
+    : String(tags || '')
+        .split(',')
+        .map((x) => x.trim());
+  const seen = new Set();
+  const normalized = [];
+  for (const value of values) {
+    const tag = String(value || '').trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(tag);
+  }
+  return normalized;
+}
+
+function normalizeProxyCategory(value = '') {
+  return String(value || '')
+    .split(',')[0]
+    .trim();
+}
+
+function proxyMetaKeyFromParts(host = '', upstream = '') {
+  const normalizedHost = String(host || '').trim().toLowerCase();
+  const normalizedUpstream = String(upstream || '').trim();
+  return normalizedHost && normalizedUpstream ? `${normalizedHost}|${normalizedUpstream}` : '';
+}
+
+function proxyMetaKeyFromSite(site) {
+  const host = site?.addresses?.[0] || '';
+  const upstream = site?.proxies?.[0]?.upstreams?.[0] || '';
+  return proxyMetaKeyFromParts(host, upstream);
+}
+
+function mergeProxyMeta(parsed, metaMap = {}) {
+  if (!parsed?.sites?.length) return parsed;
+  const sites = parsed.sites.map((site) => {
+    const key = proxyMetaKeyFromSite(site);
+    const meta = key ? metaMap[key] : null;
+    return {
+      ...site,
+      tags: normalizeProxyTags(meta?.tags?.length ? meta.tags : site.tags || []),
+      category: normalizeProxyCategory(meta?.category || site.category || ''),
+    };
+  });
+  return { ...parsed, sites };
+}
+
+async function parseConfigWithMeta(content) {
+  const parsed = await parseConfigCached(content);
+  const store = await stateStore;
+  const metaMap = await store.getProxyMetaMap();
+  const migrations = [];
+  for (const site of parsed?.sites || []) {
+    const key = proxyMetaKeyFromSite(site);
+    if (!key || metaMap[key]) continue;
+    const tags = normalizeProxyTags(site.tags || []);
+    const category = normalizeProxyCategory(site.category || '');
+    if (!tags.length && !category) continue;
+    migrations.push({ key, tags, category });
+  }
+  if (migrations.length) {
+    for (const entry of migrations) {
+      await store.setProxyMeta(entry.key, entry.tags, entry.category);
+      metaMap[entry.key] = { tags: entry.tags, category: entry.category };
+    }
+  }
+  const merged = mergeProxyMeta(parsed, metaMap);
+  return merged;
+}
+
+async function pruneProxyMetaForParsed(parsed) {
+  const store = await stateStore;
+  const keys = (parsed?.sites || []).map(proxyMetaKeyFromSite).filter(Boolean);
+  await store.pruneProxyMeta(keys);
+}
+
+async function saveProxyMetaByParts(host, upstream, tags = [], category = '') {
+  const store = await stateStore;
+  const key = proxyMetaKeyFromParts(host, upstream);
+  if (!key) return;
+  const normalizedTags = normalizeProxyTags(tags);
+  const normalizedCategory = normalizeProxyCategory(category);
+  if (!normalizedTags.length && !normalizedCategory) {
+    await store.deleteProxyMeta(key);
+    return;
+  }
+  await store.setProxyMeta(key, normalizedTags, normalizedCategory);
+}
+
+async function saveProxyMetaForSite(site, tags = [], category = '') {
+  const host = site?.addresses?.[0] || '';
+  const upstream = site?.proxies?.[0]?.upstreams?.[0] || '';
+  await saveProxyMetaByParts(host, upstream, tags, category);
+}
+
+async function deleteProxyMetaForSite(site) {
+  const store = await stateStore;
+  const key = proxyMetaKeyFromSite(site);
+  if (!key) return;
+  await store.deleteProxyMeta(key);
+}
+
 async function appBranch() {
   const result = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT });
   return result.ok ? result.stdout.trim() : 'unknown';
@@ -853,7 +959,7 @@ app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
 app.get('/api/config', auth, requirePermission('view'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
-    const parsed = await parseConfigCached(content);
+    const parsed = await parseConfigWithMeta(content);
     const includeHealth = String(req.query.health || '0') === '1';
     res.json({
       path: settings.caddyfilePath,
@@ -875,7 +981,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     if (validate) {
       const validation = await validateConfig(content);
       if (!validation.ok) {
-        return res.status(400).json({ error: 'Caddy validation failed.', validation, parsed: await parseConfigCached(content) });
+        return res.status(400).json({ error: 'Caddy validation failed.', validation, parsed: await parseConfigWithMeta(content) });
       }
     }
 
@@ -885,7 +991,9 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     } catch {}
 
     await fs.writeFile(settings.caddyfilePath, content, 'utf8');
-    res.json({ ok: true, backup, parsed: await parseConfigCached(content) });
+    const parsed = await parseConfigWithMeta(content);
+    await pruneProxyMetaForParsed(parsed);
+    res.json({ ok: true, backup, parsed });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -894,7 +1002,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
 app.get('/api/proxies/health', auth, requirePermission('view'), async (_req, res) => {
   try {
     const { content } = await readConfiguredCaddyfile();
-    const parsed = await parseConfigCached(content);
+    const parsed = await parseConfigWithMeta(content);
     res.json({ health: await checkProxyHealth(parsed) });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -924,10 +1032,11 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
     const next = appendSimpleProxy(content, req.body || {});
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category);
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -937,13 +1046,22 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
 app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
+    const previousParsed = await parseConfigCached(content);
+    const previousSite = previousParsed.sites.find((site) => String(site.line) === String(req.params.line));
+    const previousMetaKey = proxyMetaKeyFromSite(previousSite);
     const next = updateSimpleProxy(content, { ...req.body, siteLine: req.params.line });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    const nextMetaKey = proxyMetaKeyFromParts(req.body?.host, req.body?.upstream);
+    if (previousMetaKey && nextMetaKey && previousMetaKey !== nextMetaKey) {
+      const store = await stateStore;
+      await store.deleteProxyMeta(previousMetaKey);
+    }
+    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category);
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -953,13 +1071,16 @@ app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edi
 app.delete('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
+    const previousParsed = await parseConfigCached(content);
+    const previousSite = previousParsed.sites.find((site) => String(site.line) === String(req.params.line));
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    await deleteProxyMetaForSite(previousSite);
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -973,10 +1094,10 @@ app.post('/api/proxies/:line/disabled', requireTrustedOrigin, auth, requirePermi
     const next = setProxyDisabled(content, { siteLine: req.params.line, disabled });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    const parsed = await parseConfigCached(next);
+    const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -989,10 +1110,10 @@ app.post('/api/middlewares', requireTrustedOrigin, auth, requirePermission('edit
     const next = appendSnippet(content, req.body || {});
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1004,10 +1125,10 @@ app.put('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermission(
     const next = updateSnippet(content, { ...req.body, line: req.params.line });
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1019,10 +1140,10 @@ app.delete('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermissi
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfig(next);
     if (!validation.ok && !validation.unavailable) {
-      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigCached(next) });
+      return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await fs.writeFile(settings.caddyfilePath, next, 'utf8');
-    res.json({ ok: true, validation, parsed: await parseConfigCached(next), content: next });
+    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

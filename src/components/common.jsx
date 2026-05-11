@@ -200,13 +200,15 @@ export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onE
   return (
     <div className={`proxy-row ${site.disabled ? 'disabled' : ''}`}>
       <div className="proxy-row-main">
-        <span className="proxy-host">{site.addresses.join(', ')}</span>
-        <span className="proxy-target">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
-        <StatusDot check={healthCheck} disabled={site.disabled} />
-        <span className={`proxy-state ${site.disabled ? 'disabled' : 'enabled'}`}>{site.disabled ? 'disabled' : 'enabled'}</span>
-        <span className="proxy-category">{site.category || 'none'}</span>
-        <span className="proxy-tags">{(site.tags || []).join(', ') || 'none'}</span>
-        <span className="proxy-mw">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
+        <span className="proxy-host" data-label="Host">{site.addresses.join(', ')}</span>
+        <span className="proxy-target" data-label="Upstream">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
+        <div className="proxy-local" data-label="Local">
+          <StatusDot check={healthCheck} disabled={site.disabled} />
+        </div>
+        <span className={`proxy-state ${site.disabled ? 'disabled' : 'enabled'}`} data-label="State">{site.disabled ? 'disabled' : 'enabled'}</span>
+        <span className="proxy-category" data-label="Category">{site.category || 'none'}</span>
+        <span className="proxy-tags" data-label="Tags">{(site.tags || []).join(', ') || 'none'}</span>
+        <span className="proxy-mw" data-label="Imports">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
         <div className="row-actions">
           {canEdit && (
             <>

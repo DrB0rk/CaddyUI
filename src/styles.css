@@ -636,6 +636,7 @@ label {
 .proxy-host,
 .proxy-target,
 .proxy-state,
+.proxy-local,
 .proxy-category,
 .proxy-tags,
 .proxy-mw {
@@ -857,6 +858,33 @@ label {
   background: var(--overlay);
 }
 
+.updating-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--bg) 88%, #000);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.updating-card {
+  min-width: min(420px, 100%);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  text-align: center;
+}
+
+.updating-card h3,
+.updating-card p {
+  margin: 0;
+}
+
 .edit-modal {
   width: min(980px, 100%);
   padding: 16px;
@@ -1030,6 +1058,7 @@ label {
   .proxy-host,
   .proxy-target,
   .proxy-state,
+  .proxy-local,
   .proxy-category,
   .proxy-tags,
   .proxy-mw {
@@ -1038,8 +1067,40 @@ label {
     text-overflow: clip;
   }
 
+  .proxy-row-main > [data-label]:not(.row-actions) {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+
+  .proxy-row-main > [data-label]:not(.row-actions)::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+
+  .proxy-local .status-dot {
+    justify-self: start;
+  }
+
   .row-actions {
     justify-content: flex-start;
+    justify-self: stretch;
+    min-width: 0;
+    width: 100%;
+    overflow-x: auto;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    margin-top: 4px;
+    gap: 8px;
+  }
+
+  .row-actions button {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .mobile-nav {

@@ -33,6 +33,14 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
       updated_at INTEGER NOT NULL
     );
   `);
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS proxy_meta (
+      proxy_key TEXT PRIMARY KEY,
+      tags_json TEXT NOT NULL,
+      category TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
 
   if (settingsPath && fssync.existsSync(settingsPath)) {
     const existing = await db.get('SELECT key FROM kv_store WHERE key = ?', 'settings');
@@ -137,6 +145,58 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
         `,
         Math.max(50, Number(limit) || 300)
       );
+    },
+
+    async getProxyMetaMap() {
+      const rows = await db.all('SELECT proxy_key, tags_json, category FROM proxy_meta');
+      const result = {};
+      for (const row of rows || []) {
+        let tags = [];
+        try {
+          const parsed = JSON.parse(String(row.tags_json || '[]'));
+          if (Array.isArray(parsed)) tags = parsed.map((x) => String(x || '').trim()).filter(Boolean);
+        } catch {}
+        result[row.proxy_key] = { tags, category: String(row.category || '').trim() };
+      }
+      return result;
+    },
+
+    async setProxyMeta(proxyKey, tags = [], category = '') {
+      const key = String(proxyKey || '').trim();
+      if (!key) return;
+      const cleanedTags = [...new Set((Array.isArray(tags) ? tags : []).map((x) => String(x || '').trim()).filter(Boolean))];
+      const cleanedCategory = String(category || '').trim();
+      const now = Date.now();
+      await db.run(
+        `
+          INSERT INTO proxy_meta (proxy_key, tags_json, category, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(proxy_key) DO UPDATE
+          SET tags_json = excluded.tags_json,
+              category = excluded.category,
+              updated_at = excluded.updated_at
+        `,
+        key,
+        JSON.stringify(cleanedTags),
+        cleanedCategory,
+        now
+      );
+    },
+
+    async deleteProxyMeta(proxyKey) {
+      const key = String(proxyKey || '').trim();
+      if (!key) return;
+      await db.run('DELETE FROM proxy_meta WHERE proxy_key = ?', key);
+    },
+
+    async pruneProxyMeta(validKeys = []) {
+      const keys = [...new Set((Array.isArray(validKeys) ? validKeys : []).map((x) => String(x || '').trim()).filter(Boolean))];
+      if (keys.length === 0) {
+        await db.run('DELETE FROM proxy_meta');
+        return;
+      }
+      const placeholders = keys.map(() => '?').join(', ');
+      await db.run(`DELETE FROM proxy_meta WHERE proxy_key NOT IN (${placeholders})`, ...keys);
     },
   };
 }

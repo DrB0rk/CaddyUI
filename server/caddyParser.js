@@ -481,16 +481,12 @@ function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
   return next;
 }
 
-export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {}, tags = [], category = '', disabled = false }) {
+export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {}, disabled = false }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   if (!safeHost || !safeUpstream) throw new Error('Host and upstream are required.');
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
-  const safeTags = normalizeTags(tags);
-  const safeCategory = normalizeCategory(category);
   const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
-  const categoryLine = safeCategory ? `\t# caddyui-category: ${safeCategory}` : '';
-  const tagLine = safeTags.length ? `\t# caddyui-tags: ${safeTags.join(', ')}` : '';
   const disabledLine = disabled ? '\t# caddyui-disabled: true' : '';
   const logLines = formatLogLines('\t', logging).join('\n');
   const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
@@ -498,12 +494,12 @@ export function appendSimpleProxy(source, { host, upstream, imports = [], loggin
     ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
     : `\treverse_proxy ${safeUpstream}`;
   const proxyLine = disabled ? proxyBlock.split('\n').map(maskDisabledProxyLine).join('\n') : proxyBlock;
-  const block = `${safeHost} {\n${disabledLine ? `${disabledLine}\n` : ''}${categoryLine ? `${categoryLine}\n` : ''}${tagLine ? `${tagLine}\n` : ''}${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
+  const block = `${safeHost} {\n${disabledLine ? `${disabledLine}\n` : ''}${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
   return `${source.trimEnd()}\n\n${block}`;
 }
 
 
-export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging, tags = [], category = '', disabled = false }) {
+export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging, disabled = false }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
   const targetLine = Number(siteLine);
@@ -513,8 +509,6 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   if (start < 0 || start >= lines.length) throw new Error('Site block was not found.');
   const end = findMatchingBrace(lines, start);
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
-  const safeTags = normalizeTags(tags);
-  const safeCategory = normalizeCategory(category);
   const bodyLines = lines.slice(start + 1, end);
   const cleanedBody = removeTopLevelLog(removeTopLevelImports(removeTopLevelTags(removeTopLevelCategory(removeDisabledMarker(bodyLines)))));
   const rewrittenBody = replaceFirstTopLevelReverseProxy(cleanedBody, safeUpstream, proxyImports);
@@ -522,8 +516,6 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   const block = [
     `${safeHost} {`,
     ...(disabled ? [`${indent}# caddyui-disabled: true`] : []),
-    ...(safeCategory ? [`${indent}# caddyui-category: ${safeCategory}`] : []),
-    ...(safeTags.length ? [`${indent}# caddyui-tags: ${safeTags.join(', ')}`] : []),
     ...siteImports.map((name) => `${indent}import ${name}`),
     ...formatLogLines(indent, logging),
     ...(disabled ? rewrittenBody.map(maskDisabledProxyLine) : rewrittenBody),
