@@ -514,6 +514,14 @@ async function checkProxyHealth(parsed) {
 }
 
 async function collectLogs(settings, lines = 200) {
+  async function collectJournalLogs(maxLines) {
+    if (!fssync.existsSync('/run/systemd/system')) return null;
+    const result = await run('journalctl', ['-u', 'caddy', '-n', String(maxLines), '--no-pager', '-o', 'short-iso']);
+    if (!result.ok) return null;
+    return { source: 'journalctl:caddy', content: result.stdout || '', ok: true };
+  }
+
+  const mode = String(settings?.logMode || 'all');
   const discovered = await scanLogfiles(settings);
   const candidatePaths = [...new Set([...(settings.logPaths || []), ...COMMON_LOGS, ...discovered.map((x) => x.path)])];
   const paths = [];
@@ -522,13 +530,19 @@ async function collectLogs(settings, lines = 200) {
   }
 
   const entries = [];
-  for (const logPath of paths) {
-    try {
-      const stat = await fs.stat(logPath);
-      if (stat.isFile()) {
-        entries.push({ source: logPath, content: await tailFile(logPath, lines), ok: true });
-      }
-    } catch {}
+  if (mode !== 'journal') {
+    for (const logPath of paths) {
+      try {
+        const stat = await fs.stat(logPath);
+        if (stat.isFile()) {
+          entries.push({ source: logPath, content: await tailFile(logPath, lines), ok: true });
+        }
+      } catch {}
+    }
+  }
+  if (mode !== 'files') {
+    const journalEntry = await collectJournalLogs(lines);
+    if (journalEntry) entries.push(journalEntry);
   }
 
   if (entries.length === 0) {
@@ -831,7 +845,8 @@ app.get('/api/logs', auth, requirePermission('view'), async (req, res) => {
   const settings = await loadSettings();
   const requested = Number(req.query.lines || 200);
   const bounded = Number.isFinite(requested) ? Math.max(10, Math.min(2000, Math.floor(requested))) : 200;
-  res.json({ logs: await collectLogs(settings, bounded) });
+  const mode = ['all', 'files', 'journal'].includes(String(req.query.mode || 'all')) ? String(req.query.mode || 'all') : 'all';
+  res.json({ logs: await collectLogs({ ...settings, logMode: mode }, bounded) });
 });
 
 app.get('/api/settings', auth, requirePermission('view'), async (req, res) => {

@@ -386,8 +386,8 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
 export function appendSnippet(source, { name, body = '' }) {
   const safeName = String(name || '').trim().replace(/^\(|\)$/g, '');
   if (!safeName) throw new Error('Middleware name is required.');
-  const safeBody = String(body || '').trim();
-  const block = `(${safeName}) {\n${safeBody.split('\n').filter(Boolean).map((line) => `\t${line.trim()}`).join('\n')}\n}\n`;
+  const safeBody = normalizeSnippetBody(body);
+  const block = `(${safeName}) {\n${formatSnippetBodyLines(safeBody).join('\n')}\n}\n`;
   return `${source.trimEnd()}\n\n${block}`;
 }
 
@@ -399,7 +399,8 @@ export function updateSnippet(source, { line, name, body = '' }) {
   const start = targetLine - 1;
   if (start < 0 || start >= lines.length) throw new Error('Middleware block was not found.');
   const end = findMatchingBrace(lines, start);
-  const block = `(${safeName}) {\n${String(body || '').trim().split('\n').filter(Boolean).map((l) => `\t${l.trim()}`).join('\n')}\n}`.split('\n');
+  const safeBody = normalizeSnippetBody(body);
+  const block = [`(${safeName}) {`, ...formatSnippetBodyLines(safeBody), `}`];
   lines.splice(start, end - start + 1, ...block);
   return lines.join('\n');
 }
@@ -414,4 +415,24 @@ export function deleteBlockAtLine(source, line) {
   const end = findMatchingBrace(lines, start);
   lines.splice(start, end - start + 1);
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function normalizeSnippetBody(body = '') {
+  const lines = String(body || '').replace(/\r\n/g, '\n').split('\n');
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const content = lines.filter((line) => line.trim().length > 0);
+  if (!content.length) return '';
+  const minIndent = content.reduce((min, line) => {
+    const indent = (line.match(/^\s*/) || [''])[0].length;
+    return Math.min(min, indent);
+  }, Number.POSITIVE_INFINITY);
+  return lines.map((line) => (line.trim().length ? line.slice(minIndent) : '')).join('\n');
+}
+
+function formatSnippetBodyLines(body = '') {
+  return String(body || '')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => `\t${line}`);
 }
