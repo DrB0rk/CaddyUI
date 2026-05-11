@@ -53,6 +53,12 @@ Running the same command again = update mode.
 - User auth + roles (`view`, `edit`, `admin`)
 - Onboarding with Caddyfile/log discovery
 
+## How it works
+
+CaddyUI reads your configured `Caddyfile`, parses sites/proxies/imports, and shows them in the UI.
+When you edit something, it writes the change back to the `Caddyfile`, validates it with `caddy validate`, and can reload Caddy.
+It also reads Caddy logs, handles onboarding/auth/roles, and can update itself from the selected release channel (`stable`, `beta`, or `dev`).
+
 ## Looks like this
 
 <p align="center">
