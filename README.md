@@ -44,23 +44,12 @@ Use `stable` if you want the calm path. Use `beta` or `dev` if you want newer fe
 
 ## Quick install
 
-### Stable
+### paste this into your caddy machine for a guided install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/main/scripts/install.sh | bash
 ```
 
-### Beta
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/beta/scripts/install.sh | bash
-```
-
-### Dev
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DrB0rk/CaddyUI/dev/scripts/install.sh | bash
-```
 
 When the installer finishes, it prints your onboarding URL.
 
