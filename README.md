@@ -30,17 +30,6 @@ Because editing reverse proxy configs by hand is fun right up until it is not.
 [![Last commit](https://img.shields.io/github/last-commit/DrB0rk/CaddyUI)](https://github.com/DrB0rk/CaddyUI/commits)
 [![Stars](https://img.shields.io/github/stars/DrB0rk/CaddyUI?style=flat)](https://github.com/DrB0rk/CaddyUI/stargazers)
 
-## Active development warning
-
-CaddyUI is under active development. Things move quickly, and some parts may still change between versions.
-
-Release channels:
-
-- `main` is the stable release lane
-- `beta` is for pre-release testing
-- `dev` gets the newest changes first and may be less predictable
-
-Use `stable` if you want the calm path. Use `beta` or `dev` if you want newer features and do not mind the occasional sharp edge.
 
 ## Quick install
 
@@ -55,7 +44,20 @@ When the installer finishes, it prints your onboarding URL.
 
 Run the same command again later to update CaddyUI.
 
-> Beta and dev builds may show `-dev` style app versions. That is expected.
+
+## Active development warning
+
+CaddyUI is under active development. Things move quickly, and some parts may still change between versions.
+
+Release channels:
+
+- `main` is the stable release lane
+- `beta` is for pre-release testing
+- `dev` gets the newest changes first and may be less predictable
+
+Use `stable` if you want the calm path. Use `beta` or `dev` if you want newer features and do not mind the occasional sharp edge.
+
+
 
 ## What you get
 
