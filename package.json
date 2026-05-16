@@ -8,6 +8,7 @@
     "dev:client": "vite --host 0.0.0.0",
     "dev:server": "node server/index.js",
     "build": "vite build",
+    "release:patch": "node scripts/create-patch.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "start": "NODE_ENV=production node server/index.js",
     "typecheck": "tsc --noEmit"

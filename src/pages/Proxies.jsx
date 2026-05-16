@@ -7,7 +7,6 @@ import {
   MiddlewarePicker,
   Notice,
   ProxyRow,
-  StatusDot,
   StatCards,
   deleteConfirm,
   normalizeLogging,
@@ -201,7 +200,6 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
   const [collapsedSections, setCollapsedSections] = useState({});
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState('domain');
-  const [entryMode, setEntryMode] = useState('standard');
   const [sort, setSort] = useState({ key: 'host', dir: 'asc' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -217,8 +215,6 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
 
   const filteredSites = useMemo(() => {
     return sites.filter((site) => {
-      const matchesMode = entryMode === 'advanced' ? !isStandardProxySite(site) : isStandardProxySite(site);
-      if (!matchesMode) return false;
       if (!query) return true;
       return [
         site.addresses.join(' '),
@@ -235,7 +231,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
         .toLowerCase()
         .includes(query);
     });
-  }, [entryMode, query, sites]);
+  }, [query, sites]);
 
   const groupedEntries = useMemo(() => {
     const sorted = [...filteredSites].sort((a, b) => sortSites(a, b, sort, health));
@@ -536,13 +532,6 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
               <option value="category">Sections by category</option>
             </select>
           </label>
-          <label>
-            Mode
-            <select value={entryMode} onChange={(e) => setEntryMode(e.target.value)}>
-              <option value="standard">Standard entries</option>
-              <option value="advanced">Advanced entries</option>
-            </select>
-          </label>
           <button onClick={refresh}><RefreshCw size={16} /> Refresh</button>
         </div>
       </div>
@@ -730,7 +719,6 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 <h3>{groupName}</h3>
                 <span>{items.length} entries</span>
               </summary>
-              {entryMode === 'standard' && (
               <div className="proxy-table-head">
                 <button type="button" className={`table-sort ${sort.key === 'host' ? 'active' : ''}`} onClick={() => toggleSort('host')}>Host{sortArrow('host')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'upstream' ? 'active' : ''}`} onClick={() => toggleSort('upstream')}>Upstream{sortArrow('upstream')}</button>
@@ -740,44 +728,22 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 <button type="button" className={`table-sort ${sort.key === 'imports' ? 'active' : ''}`} onClick={() => toggleSort('imports')}>Imports{sortArrow('imports')}</button>
                 <span>Actions</span>
               </div>
-              )}
               {items.slice(0, renderLimits[groupName] || 0).map((site) => (
-                entryMode === 'advanced' ? (
-                <article className="proxy-advanced-card" key={site.id}>
-                  <div className="proxy-advanced-head">
-                    <div>
-                      <h4>{site.addresses[0] || 'Unnamed site'}</h4>
-                      <p>{advancedSiteReason(site)}</p>
-                    </div>
-                    <span className="proxy-advanced-badge">Advanced</span>
-                  </div>
-                  <div className="proxy-advanced-grid">
-                    <span><b>Local</b><StatusDot check={health?.[site.id]?.local} disabled={site.disabled} /></span>
-                    <span><b>Disabled</b>{site.disabled ? 'yes' : 'no'}</span>
-                  </div>
-                  <div className="proxy-advanced-summary">
-                    <span><b>Upstreams</b>{site.proxies.map((proxy) => proxy.upstreams.join(' ')).filter(Boolean).join(' | ') || 'none'}</span>
-                    <span><b>Imports</b>{siteImportNames(site).join(', ') || 'none'}</span>
-                  </div>
-                  <pre>{readBlockAtLine(config.content, site.line)}</pre>
-                  <div className="row-actions">
-                    <button type="button" onClick={() => startEdit(site)}>Edit raw</button>
-                    {canEdit && <button type="button" onClick={() => toggleDisabled(site)} disabled={pendingToggleLine === String(site.line)}>{pendingToggleLine === String(site.line) ? 'Saving...' : site.disabled ? 'Enable' : 'Disable'}</button>}
-                    {canEdit && <button type="button" className="danger" onClick={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}>Delete</button>}
-                  </div>
-                </article>
-                ) : (
                 <ProxyRow
                   key={site.id}
                   site={site}
                   healthCheck={health?.[site.id]?.local}
                   canEdit={canEdit}
                   toggleBusy={pendingToggleLine === String(site.line)}
+                  hostBadge={isStandardProxySite(site) ? '' : 'Advanced'}
+                  note={isStandardProxySite(site) ? '' : advancedSiteReason(site)}
+                  upstreamText={!isStandardProxySite(site) ? site.proxies.map((proxy) => proxy.upstreams.join(' ')).filter(Boolean).join(' | ') : ''}
+                  importsText={!isStandardProxySite(site) ? siteImportNames(site).join(', ') : ''}
+                  editLabel={!isStandardProxySite(site) ? 'Edit raw' : 'Edit'}
                   onToggleDisabled={() => toggleDisabled(site)}
                   onEdit={() => startEdit(site)}
                   onDelete={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}
                 />
-                )
               ))}
               {(renderLimits[groupName] || 0) < items.length && <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /></div>}
             </details>

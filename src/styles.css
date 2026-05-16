@@ -761,6 +761,21 @@ label {
   font-weight: 650;
   display: grid;
   gap: 4px;
+  overflow: visible;
+  white-space: normal;
+}
+
+.proxy-host-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.proxy-host-title > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .proxy-host-link {
@@ -780,7 +795,28 @@ label {
   font-weight: 500;
 }
 
-.proxy-host,
+.proxy-note {
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.proxy-entry-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface) 32%);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
 .proxy-target,
 .proxy-local,
 .proxy-category,
@@ -823,17 +859,18 @@ label {
 }
 
 .middleware-builder {
-  padding: 16px;
+  padding: 18px;
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+  gap: 18px;
+  align-items: start;
 }
 
 .middleware-builder-main,
 .middleware-side-card,
 .middleware-empty {
   min-width: 0;
-  padding: 16px;
+  padding: 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface-2);
@@ -841,12 +878,12 @@ label {
 
 .middleware-builder-main {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .middleware-builder-side {
   display: grid;
-  gap: 16px;
+  gap: 14px;
   align-content: start;
 }
 
@@ -880,6 +917,8 @@ label {
 
 .middleware-editor-toolbar {
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .middleware-template-grid {
@@ -941,12 +980,15 @@ label {
 
 .middleware-searchbar {
   margin-bottom: 14px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, minmax(150px, 180px));
   gap: 10px;
+  align-items: stretch;
 }
 
 .middleware-searchbar select {
-  max-width: 180px;
+  width: 100%;
+  max-width: none;
 }
 
 .middleware-results {
@@ -970,11 +1012,11 @@ label {
 }
 
 .middleware-search-input {
-  flex: 1;
-  min-width: min(320px, 100%);
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 42px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -996,8 +1038,8 @@ label {
 .middleware-table-head,
 .middleware-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.15fr) 100px 92px minmax(220px, 0.9fr) minmax(220px, 1fr) 270px;
-  gap: 10px;
+  grid-template-columns: minmax(220px, 1.1fr) 92px 84px minmax(180px, 0.85fr) minmax(180px, 1fr) 248px;
+  gap: 12px;
   align-items: center;
 }
 
@@ -1012,6 +1054,11 @@ label {
 .middleware-row {
   padding: 12px 14px;
   border-bottom: 1px solid var(--line);
+}
+
+.middleware-row .row-actions {
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .middleware-row:last-child {
@@ -1413,17 +1460,18 @@ label {
 }
 
 .settings-form {
-  max-width: 1040px;
-  padding: 18px;
+  max-width: none;
+  width: 100%;
+  padding: 20px;
   display: grid;
-  gap: 16px;
+  gap: 18px;
   margin-bottom: 16px;
 }
 
 .settings-layout {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
@@ -1431,7 +1479,7 @@ label {
   position: sticky;
   top: 80px;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .settings-subnav button {
@@ -1454,7 +1502,7 @@ label {
 .settings-card-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  gap: 16px;
+  gap: 14px 16px;
 }
 
 .settings-card {
@@ -1481,6 +1529,7 @@ label {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
+  align-items: end;
 }
 
 .settings-page-head {
@@ -1492,7 +1541,8 @@ label {
 }
 
 .settings-overview {
-  max-width: 900px;
+  max-width: none;
+  width: 100%;
   margin-bottom: 14px;
   padding: 14px;
   display: grid;
@@ -1532,6 +1582,19 @@ label {
 .settings-section-head {
   display: grid;
   gap: 6px;
+  grid-column: 1 / -1;
+  max-width: 56ch;
+}
+
+.settings-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+.settings-form-actions .primary {
+  min-width: 220px;
 }
 
 .settings-toggle {
@@ -1738,57 +1801,6 @@ label {
   font-size: 12px;
 }
 
-.proxy-advanced-card {
-  margin: 12px 14px 14px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  display: grid;
-  gap: 12px;
-}
-
-.proxy-advanced-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.proxy-advanced-head h4 {
-  margin: 0;
-}
-
-.proxy-advanced-head p {
-  margin: 4px 0 0;
-}
-
-.proxy-advanced-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 4px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-soft) 75%, var(--surface) 25%);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.proxy-advanced-card pre {
-  margin: 0;
-  max-height: 260px;
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--input) 72%, #000 28%);
-  font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .confirm-layer {
   position: fixed;
   inset: 0;
@@ -1883,6 +1895,10 @@ label {
   .middleware-card-head > button,
   .middleware-card-head .primary {
     width: 100%;
+  }
+
+  .middleware-searchbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2025,6 +2041,7 @@ label {
   }
 
   .middleware-searchbar {
+    grid-template-columns: 1fr;
     align-items: stretch;
   }
 
@@ -2042,10 +2059,6 @@ label {
 
   .middleware-preview-card pre {
     max-height: 220px;
-  }
-
-  .proxy-advanced-card {
-    margin-inline: 0;
   }
 
   .middleware-results {
@@ -2139,6 +2152,15 @@ label {
 
   .settings-inline-action {
     grid-template-columns: 1fr;
+  }
+
+  .settings-form-actions {
+    justify-content: stretch;
+  }
+
+  .settings-form-actions .primary {
+    width: 100%;
+    min-width: 0;
   }
 
   .mobile-nav {

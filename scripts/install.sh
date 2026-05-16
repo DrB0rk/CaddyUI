@@ -56,8 +56,28 @@ fail() { printf "%b\n" "${RED}✗${NC} $*" >&2; exit 1; }
 app_version_from_dir() {
   local dir="$1"
   local package_json="$dir/package.json"
+  local release_json="$dir/release.json"
   [[ -f "$package_json" ]] || { printf 'unknown'; return 0; }
-  node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(p.version||"unknown"));' "$package_json" 2>/dev/null || printf 'unknown'
+  node -e '
+const fs=require("fs");
+const path=require("path");
+const dir=process.argv[1];
+const packagePath=path.join(dir,"package.json");
+const releasePath=path.join(dir,"release.json");
+let version="unknown";
+let patch="";
+try {
+  const pkg=JSON.parse(fs.readFileSync(packagePath,"utf8"));
+  version=String(pkg.version||version);
+} catch {}
+try {
+  const release=JSON.parse(fs.readFileSync(releasePath,"utf8"));
+  if (release && typeof release.version === "string" && release.version.trim()) version=release.version.trim();
+  const maybePatch=String(release?.patch||"").trim();
+  if (/^\d{8}-\d+$/.test(maybePatch)) patch=maybePatch;
+} catch {}
+process.stdout.write(patch ? `${version}+${patch}` : version);
+' "$dir" 2>/dev/null || printf 'unknown'
 }
 run_quiet() {
   if [[ "$DRY_RUN" == "1" ]]; then

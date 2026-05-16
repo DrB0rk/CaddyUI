@@ -383,7 +383,11 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
                 </div>
               </div>
 
-              {canEdit && <button className="primary">Save connection settings</button>}
+              {canEdit && (
+                <div className="settings-form-actions">
+                  <button className="primary">Save connection settings</button>
+                </div>
+              )}
             </form>
           )}
 
@@ -419,7 +423,11 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
                   <textarea rows="6" value={form.allowedOrigins} onChange={(e) => setForm({ ...form, allowedOrigins: e.target.value })} readOnly={!canAdmin} />
                 </label>
               </div>
-              {canEdit && <button className="primary">Save security settings</button>}
+              {canEdit && (
+                <div className="settings-form-actions">
+                  <button className="primary">Save security settings</button>
+                </div>
+              )}
             </form>
           )}
 
@@ -437,7 +445,9 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
                 New password
                 <input type="password" minLength={8} value={passwordForm.newPassword} onChange={(e) => setPasswordForm({ ...passwordForm, newPassword: e.target.value })} />
               </label>
-              <button className="primary">Change password</button>
+              <div className="settings-form-actions">
+                <button className="primary">Change password</button>
+              </div>
             </form>
           )}
 
@@ -487,7 +497,9 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
                   <option value="dev">dev</option>
                 </select>
               </label>
-              <button className="primary">Save update channel</button>
+              <div className="settings-form-actions">
+                <button className="primary">Save update channel</button>
+              </div>
             </form>
           )}
 

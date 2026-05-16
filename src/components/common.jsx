@@ -327,45 +327,64 @@ export const StatusDot = ({ check, disabled = false }) => {
   return <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
 };
 
-export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, toggleBusy = false, onEdit, onDelete, onToggleDisabled }) {
+export const ProxyRow = memo(function ProxyRow({
+  site,
+  healthCheck,
+  canEdit,
+  toggleBusy = false,
+  onEdit,
+  onDelete,
+  onToggleDisabled,
+  hostBadge = '',
+  note = '',
+  upstreamText = '',
+  importsText = '',
+  editLabel = 'Edit',
+}) {
   const addresses = Array.isArray(site.addresses) ? site.addresses : [];
   const description = String(site.description || '').trim();
   return (
     <div className={`proxy-row ${site.disabled ? 'disabled' : ''} ${toggleBusy ? 'pending' : ''}`}>
       <div className={`proxy-row-main ${canEdit ? 'clickable' : ''}`} onClick={canEdit ? onEdit : undefined} role={canEdit ? 'button' : undefined} tabIndex={canEdit ? 0 : undefined} onKeyDown={canEdit ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onEdit(); } } : undefined}>
         <span className="proxy-host" data-label="Host">
-          {addresses.length > 0
-            ? addresses.map((address, index) => {
-              const href = proxyHostHref(address);
-              const key = `${site.id || site.line || 'site'}-address-${index}`;
-              return (
-                <React.Fragment key={key}>
-                  {index > 0 ? ', ' : ''}
-                  {href ? (
-                    <a className="proxy-host-link" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>
-                      {address}
-                    </a>
-                  ) : (
-                    <span>{address}</span>
-                  )}
-                </React.Fragment>
-              );
-            })
-            : 'none'}
+          <span className="proxy-host-title">
+            <span>
+              {addresses.length > 0
+                ? addresses.map((address, index) => {
+                  const href = proxyHostHref(address);
+                  const key = `${site.id || site.line || 'site'}-address-${index}`;
+                  return (
+                    <React.Fragment key={key}>
+                      {index > 0 ? ', ' : ''}
+                      {href ? (
+                        <a className="proxy-host-link" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>
+                          {address}
+                        </a>
+                      ) : (
+                        <span>{address}</span>
+                      )}
+                    </React.Fragment>
+                  );
+                })
+                : 'none'}
+            </span>
+            {hostBadge && <span className="proxy-entry-badge">{hostBadge}</span>}
+          </span>
           {description && <small className="proxy-description">{description}</small>}
+          {note && <small className="proxy-note">{note}</small>}
         </span>
-        <span className="proxy-target" data-label="Upstream">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
+        <span className="proxy-target" data-label="Upstream">{upstreamText || site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
         <div className="proxy-local" data-label="Local">
           <StatusDot check={healthCheck} disabled={site.disabled} />
         </div>
         <span className="proxy-category" data-label="Category">{site.category || 'none'}</span>
         <span className="proxy-tags" data-label="Tags">{(site.tags || []).join(', ') || 'none'}</span>
-        <span className="proxy-mw" data-label="Imports">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
+        <span className="proxy-mw" data-label="Imports">{importsText || [...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
         <div className="row-actions">
           {canEdit && (
             <>
               <button type="button" onClick={(e) => { e.stopPropagation(); onToggleDisabled(); }} disabled={toggleBusy}>{toggleBusy ? 'Saving...' : site.disabled ? 'Enable' : 'Disable'}</button>
-              <button type="button" onClick={(e) => { e.stopPropagation(); onEdit(); }}>Edit</button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onEdit(); }}>{editLabel}</button>
               <button type="button" className="danger" onClick={(e) => { e.stopPropagation(); onDelete(e); }}>Delete</button>
             </>
           )}

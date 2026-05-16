@@ -27,7 +27,9 @@ app.disable('x-powered-by');
 
 const PORT = Number(process.env.CADDY_UI_PORT || process.env.PORT || 8787);
 const ROOT = process.cwd();
-const APP_VERSION = JSON.parse(fssync.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+const PACKAGE_JSON_PATH = path.join(ROOT, 'package.json');
+const RELEASE_METADATA_PATH = path.join(ROOT, 'release.json');
+const APP_PACKAGE_VERSION = JSON.parse(fssync.readFileSync(PACKAGE_JSON_PATH, 'utf8')).version;
 const DATA_DIR = process.env.CADDY_UI_DATA_DIR || path.join(ROOT, 'data');
 const DB_PATH = process.env.CADDY_UI_DB_PATH || path.join(DATA_DIR, 'caddyui.db');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
@@ -115,6 +117,44 @@ if (IS_PRODUCTION && weakSecretConfigured) {
 }
 if (!IS_PRODUCTION && weakSecretConfigured) {
   console.warn('[security] Using a weak CADDY_UI_SECRET outside production; set at least 32 characters.');
+}
+
+function normalizePatchVersion(value = '') {
+  const trimmed = String(value || '').trim();
+  return /^\d{8}-\d+$/.test(trimmed) ? trimmed : '';
+}
+
+function formatDisplayVersion(version = '', patch = '') {
+  const cleanVersion = String(version || '').trim() || APP_PACKAGE_VERSION;
+  const cleanPatch = normalizePatchVersion(patch);
+  return cleanPatch ? `${cleanVersion}+${cleanPatch}` : cleanVersion;
+}
+
+function normalizeReleaseMetadata(raw = {}, fallbackVersion = APP_PACKAGE_VERSION) {
+  const version = String(raw?.version || fallbackVersion || APP_PACKAGE_VERSION).trim() || APP_PACKAGE_VERSION;
+  const patch = normalizePatchVersion(raw?.patch || '');
+  return {
+    version,
+    patch,
+    displayVersion: formatDisplayVersion(version, patch),
+  };
+}
+
+function readReleaseMetadataSync(filePath, fallbackVersion = APP_PACKAGE_VERSION) {
+  try {
+    const raw = JSON.parse(fssync.readFileSync(filePath, 'utf8'));
+    return normalizeReleaseMetadata(raw, fallbackVersion);
+  } catch {
+    return normalizeReleaseMetadata({}, fallbackVersion);
+  }
+}
+
+function readReleaseMetadataFromGit(stdout = '', fallbackVersion = APP_PACKAGE_VERSION) {
+  try {
+    return normalizeReleaseMetadata(JSON.parse(stdout), fallbackVersion);
+  } catch {
+    return normalizeReleaseMetadata({}, fallbackVersion);
+  }
 }
 
 app.set('trust proxy', runtimeTrustProxyHops > 0 ? runtimeTrustProxyHops : false);
@@ -1183,6 +1223,7 @@ async function appBranch() {
 }
 
 async function appUpdateStatus(fetchRemote = false, channelOverride = '') {
+  const localRelease = readReleaseMetadataSync(RELEASE_METADATA_PATH, APP_PACKAGE_VERSION);
   const currentBranch = await appBranch();
   const settings = await loadSettings();
   const { channel, branch: targetBranch } = UPDATE_CHANNELS.has(String(channelOverride || '').trim().toLowerCase())
@@ -1195,21 +1236,37 @@ async function appUpdateStatus(fetchRemote = false, channelOverride = '') {
   const remoteHead = targetBranch === 'unknown' ? { ok: false, stdout: '' } : await run('git', ['rev-parse', `origin/${targetBranch}`], { cwd: ROOT });
   const localCommit = head.ok ? head.stdout.trim() : '';
   const remoteCommit = remoteHead.ok ? remoteHead.stdout.trim() : '';
-  let remoteVersion = APP_VERSION;
+  let remotePackageVersion = localRelease.version;
   if (targetBranch !== 'unknown') {
     const remotePkg = await run('git', ['show', `origin/${targetBranch}:package.json`], { cwd: ROOT });
     if (remotePkg.ok) {
       try {
-        remoteVersion = JSON.parse(remotePkg.stdout).version || APP_VERSION;
+        remotePackageVersion = JSON.parse(remotePkg.stdout).version || localRelease.version;
       } catch {}
+    }
+  }
+  let remoteRelease = normalizeReleaseMetadata({}, remotePackageVersion);
+  if (targetBranch !== 'unknown') {
+    const remoteReleaseResult = await run('git', ['show', `origin/${targetBranch}:release.json`], { cwd: ROOT });
+    if (remoteReleaseResult.ok) {
+      remoteRelease = readReleaseMetadataFromGit(remoteReleaseResult.stdout, remotePackageVersion);
     }
   }
   const updateAvailable = Boolean(localCommit && remoteCommit && localCommit !== remoteCommit);
   return {
-    version: APP_VERSION,
-    localVersion: APP_VERSION,
-    remoteVersion,
-    availableVersion: updateAvailable ? remoteVersion : APP_VERSION,
+    version: localRelease.displayVersion,
+    localVersion: localRelease.displayVersion,
+    packageVersion: localRelease.version,
+    localPackageVersion: localRelease.version,
+    patchVersion: localRelease.patch,
+    localPatchVersion: localRelease.patch,
+    displayVersion: localRelease.displayVersion,
+    localDisplayVersion: localRelease.displayVersion,
+    remoteVersion: remoteRelease.displayVersion,
+    remotePackageVersion: remoteRelease.version,
+    remotePatchVersion: remoteRelease.patch,
+    remoteDisplayVersion: remoteRelease.displayVersion,
+    availableVersion: updateAvailable ? remoteRelease.displayVersion : localRelease.displayVersion,
     branch: targetBranch,
     updateChannel: channel,
     currentBranch,

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { parseCaddyfile } from '../server/caddyParser.js';
 import pkg from '../package.json';
+import releaseMeta from '../release.json';
 import './styles.css';
 import Proxies from './pages/Proxies.jsx';
 import Middlewares from './pages/Middlewares.jsx';
@@ -10,7 +11,18 @@ import Logs from './pages/Logs.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import { AuthGate, Notice, ReloadConfirmModal, Shell } from './components/common.jsx';
 
-const APP_VERSION = pkg.version;
+function normalizePatchVersion(value = '') {
+  const trimmed = String(value || '').trim();
+  return /^\d{8}-\d+$/.test(trimmed) ? trimmed : '';
+}
+
+function formatDisplayVersion(version = '', patch = '') {
+  const cleanVersion = String(version || '').trim() || pkg.version;
+  const cleanPatch = normalizePatchVersion(patch);
+  return cleanPatch ? `${cleanVersion}+${cleanPatch}` : cleanVersion;
+}
+
+const APP_VERSION = formatDisplayVersion(releaseMeta?.version || pkg.version, releaseMeta?.patch || '');
 const localTest = import.meta.env.DEV && import.meta.env.VITE_CADDYUI_LOCAL_TEST === '1';
 const emptyConfig = { path: 'Caddyfile', content: '', parsed: parseCaddyfile(''), health: {} };
 const localSettings = {
@@ -340,8 +352,8 @@ export default function App() {
         setAppInfo(baseline);
       } catch {}
       const baselineCommit = baseline?.localCommit || '';
-      const baselineVersion = baseline?.version || baseline?.localVersion || APP_VERSION;
-      const targetVersion = baseline?.availableVersion || baseline?.remoteVersion || '';
+      const baselineVersion = baseline?.displayVersion || baseline?.version || baseline?.localVersion || APP_VERSION;
+      const targetVersion = baseline?.availableVersion || baseline?.remoteDisplayVersion || baseline?.remoteVersion || '';
       setUpdateMessage(targetVersion ? `Updating to ${targetVersion}...` : 'Updating...');
 
       const updateStart = await api('/api/app/update', {
@@ -366,8 +378,8 @@ export default function App() {
           );
           const versionChanged = Boolean(
             baselineVersion &&
-            status.version &&
-            baselineVersion !== status.version
+            (status.displayVersion || status.version) &&
+            baselineVersion !== (status.displayVersion || status.version)
           );
           const branchAligned = !status.branch || !status.currentBranch || status.branch === status.currentBranch;
           const upToDate =
@@ -386,14 +398,17 @@ export default function App() {
             setUpdateMessage('Waiting for updated app to come online...');
           }
           if (confirmedReadyCount >= 2) {
-            const nextVersion = status.version || status.localVersion || targetVersion || baselineVersion;
+            const nextVersion = status.displayVersion || status.version || status.localDisplayVersion || status.localVersion || targetVersion || baselineVersion;
             setAppInfo((prev) => ({
               ...prev,
               ...status,
               version: nextVersion,
               localVersion: nextVersion,
+              displayVersion: nextVersion,
+              localDisplayVersion: nextVersion,
               availableVersion: nextVersion,
-              remoteVersion: status.remoteVersion || nextVersion,
+              remoteVersion: status.remoteDisplayVersion || status.remoteVersion || nextVersion,
+              remoteDisplayVersion: status.remoteDisplayVersion || status.remoteVersion || nextVersion,
               updateAvailable: false,
             }));
             setUpdating(false);
