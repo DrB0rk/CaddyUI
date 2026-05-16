@@ -106,6 +106,10 @@ The first-time setup walks you through:
 3. Selecting a detected Caddyfile or entering a path manually
 4. Selecting detected log files or adding log paths manually
 
+## Security note
+
+- In production (`NODE_ENV=production`), set `CADDY_UI_SECRET` to a strong value (at least 32 characters), or the server will refuse to start.
+
 ## UI pages
 
 - **Proxies**  

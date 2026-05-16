@@ -348,6 +348,8 @@ function proxyScopedSnippet(snippet) {
   if (!snippet) return false;
   const body = String(snippet.body || '');
   const names = (snippet.directives || []).map((d) => d.name);
+  // `forward_auth` snippets are intended for site/server block scope.
+  if (names.includes('forward_auth') || /\bforward_auth\b/.test(body)) return false;
   return names.some((name) => ['header_up', 'header_down', 'method', 'rewrite', 'uri', 'transport'].includes(name) || name.startsWith('lb_')) || /\bheader_up\b|\bheader_down\b|\btransport\b/.test(body);
 }
 function splitImportsByScope(source, imports = []) {

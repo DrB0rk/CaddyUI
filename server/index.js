@@ -107,8 +107,12 @@ const stateStore = createStateStore({
   fileMode: 0o600,
 });
 
-if (IS_PRODUCTION && (JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32)) {
-  throw new Error('Set CADDY_UI_SECRET to a strong value.');
+const weakSecretConfigured = JWT_SECRET === DEFAULT_SECRET || JWT_SECRET.length < 32;
+if (IS_PRODUCTION && weakSecretConfigured) {
+  throw new Error('Set CADDY_UI_SECRET to a strong value (at least 32 characters).');
+}
+if (!IS_PRODUCTION && weakSecretConfigured) {
+  console.warn('[security] Using a weak CADDY_UI_SECRET outside production; set at least 32 characters.');
 }
 
 app.set('trust proxy', runtimeTrustProxyHops > 0 ? runtimeTrustProxyHops : false);
@@ -609,6 +613,30 @@ function tcpCheck(host, port, timeout = 1800) {
 }
 
 async function checkProxyHealth(parsed) {
+  async function probeTarget(host = '', port = 0) {
+    const value = String(host || '').trim();
+    if (!value) return { online: false, error: 'missing', host: '', port };
+    const ipVersion = net.isIP(value);
+    if (ipVersion > 0) {
+      if (privateIp(value)) return { online: false, error: 'blocked-private-address', host: value, port };
+      const direct = await tcpCheck(value, port);
+      return { ...direct, host: value, port };
+    }
+    try {
+      const resolved = await dns.lookup(value);
+      const resolvedAddress = String(resolved.address || '');
+      if (!resolvedAddress) return { online: false, error: 'lookup_failed', host: value, port };
+      if (privateIp(resolvedAddress)) {
+        return { online: false, error: 'blocked-private-address', host: value, port };
+      }
+      // Connect to the already-validated IP to avoid a second DNS resolution step.
+      const direct = await tcpCheck(resolvedAddress, port);
+      return { ...direct, host: value, port };
+    } catch (error) {
+      return { online: false, error: error.code || error.message || 'lookup_failed', host: value, port };
+    }
+  }
+
   const results = {};
   await Promise.all(
     (parsed.sites || []).map(async (site) => {
@@ -624,17 +652,12 @@ async function checkProxyHealth(parsed) {
       const target = splitHostPort(upstream);
       const domainHost = splitHostPort(domain).host;
       const [local, domainResult] = await Promise.all([
-        target.host ? tcpCheck(target.host, target.port) : { online: false, error: 'missing' },
-        domainHost
-          ? dns
-              .lookup(domainHost)
-              .then(() => tcpCheck(domainHost, 443))
-              .catch((err) => ({ online: false, error: err.code || err.message }))
-          : { online: false, error: 'missing' },
+        probeTarget(target.host, target.port),
+        probeTarget(domainHost, 443),
       ]);
       results[site.id] = {
-        local: { ...local, host: target.host, port: target.port },
-        domain: { ...domainResult, host: domainHost, port: 443 },
+        local,
+        domain: domainResult,
       };
     })
   );
@@ -960,12 +983,15 @@ app.get('/api/config', auth, requirePermission('view'), async (req, res) => {
   try {
     const { settings, content } = await readConfiguredCaddyfile();
     const parsed = await parseConfigWithMeta(content);
-    const includeHealth = String(req.query.health || '0') === '1';
+    const wantsHealth = String(req.query.health || '0') === '1';
+    if (wantsHealth && !hasPermission(req.user?.role, 'edit')) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     res.json({
       path: settings.caddyfilePath,
       content,
       parsed,
-      health: includeHealth ? await checkProxyHealth(parsed) : {},
+      health: wantsHealth ? await checkProxyHealth(parsed) : {},
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -999,7 +1025,7 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
   }
 });
 
-app.get('/api/proxies/health', auth, requirePermission('view'), async (_req, res) => {
+app.get('/api/proxies/health', auth, requirePermission('edit'), async (_req, res) => {
   try {
     const { content } = await readConfiguredCaddyfile();
     const parsed = await parseConfigWithMeta(content);
