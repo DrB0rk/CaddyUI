@@ -17,7 +17,7 @@ export default function Configuration({ config, setConfig, refresh, canEdit, the
     if (!canEdit) return;
     if (localTest) { setConfig((c) => ({ ...c, content: draft, parsed: parseCaddyfile(draft) })); setResult({ ok: true, stdout: 'Saved in browser only' }); return; }
     setBusy(true); setResult(null);
-    try { const r = await api('/api/config', { method: 'POST', body: JSON.stringify({ content: draft, validate: true }) }); setConfig((c) => ({ ...c, content: draft, parsed: r.parsed })); onConfigChanged?.('Configuration saved.'); setResult({ ok: true, stdout: `Saved. Backup: ${r.backup}` }); }
+    try { const r = await api('/api/config', { method: 'POST', body: JSON.stringify({ content: draft, validate: true }) }); setConfig((c) => ({ ...c, content: draft, parsed: r.parsed })); onConfigChanged?.('Configuration saved.', r.event || null); setResult({ ok: true, stdout: `Saved. Backup: ${r.backup}` }); }
     catch (e) { setResult({ ok: false, stderr: e.message }); }
     finally { setBusy(false); }
   };

@@ -42,6 +42,21 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
       updated_at INTEGER NOT NULL
     );
   `);
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS event_log (
+      id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      actor_username TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT NOT NULL,
+      details_json TEXT NOT NULL
+    );
+  `);
   try {
     await db.exec(`ALTER TABLE proxy_meta ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
   } catch {}
@@ -208,6 +223,108 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
       }
       const placeholders = keys.map(() => '?').join(', ');
       await db.run(`DELETE FROM proxy_meta WHERE proxy_key NOT IN (${placeholders})`, ...keys);
+    },
+
+    async appendEvent(event = {}) {
+      const payload = {
+        id: String(event.id || '').trim(),
+        createdAt: Number(event.createdAt || Date.now()),
+        actorUsername: String(event.actorUsername || '').trim(),
+        actorRole: String(event.actorRole || '').trim(),
+        kind: String(event.kind || '').trim(),
+        action: String(event.action || '').trim(),
+        targetType: String(event.targetType || '').trim(),
+        targetId: String(event.targetId || '').trim(),
+        status: String(event.status || '').trim(),
+        message: String(event.message || '').trim(),
+        details: event.details && typeof event.details === 'object' ? event.details : {},
+      };
+      await db.run(
+        `
+          INSERT INTO event_log (
+            id,
+            created_at,
+            actor_username,
+            actor_role,
+            kind,
+            action,
+            target_type,
+            target_id,
+            status,
+            message,
+            details_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        payload.id,
+        payload.createdAt,
+        payload.actorUsername,
+        payload.actorRole,
+        payload.kind,
+        payload.action,
+        payload.targetType,
+        payload.targetId,
+        payload.status,
+        payload.message,
+        JSON.stringify(payload.details)
+      );
+    },
+
+    async listEvents({ limit = 200 } = {}) {
+      const bounded = Math.max(10, Math.min(1000, Number(limit) || 200));
+      const rows = await db.all(
+        `
+          SELECT
+            id,
+            created_at,
+            actor_username,
+            actor_role,
+            kind,
+            action,
+            target_type,
+            target_id,
+            status,
+            message,
+            details_json
+          FROM event_log
+          ORDER BY created_at DESC
+          LIMIT ?
+        `,
+        bounded
+      );
+      return (rows || []).map((row) => {
+        let details = {};
+        try {
+          details = JSON.parse(String(row.details_json || '{}'));
+        } catch {}
+        return {
+          id: String(row.id || ''),
+          createdAt: Number(row.created_at || 0),
+          actorUsername: String(row.actor_username || ''),
+          actorRole: String(row.actor_role || ''),
+          kind: String(row.kind || ''),
+          action: String(row.action || ''),
+          targetType: String(row.target_type || ''),
+          targetId: String(row.target_id || ''),
+          status: String(row.status || ''),
+          message: String(row.message || ''),
+          details,
+        };
+      });
+    },
+
+    async pruneEvents(limit = 2000) {
+      await db.run(
+        `
+          DELETE FROM event_log
+          WHERE id IN (
+            SELECT id
+            FROM event_log
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET ?
+          )
+        `,
+        Math.max(200, Number(limit) || 2000)
+      );
     },
   };
 }

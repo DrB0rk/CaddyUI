@@ -521,6 +521,50 @@ async function saveSessionState(state) {
   await store.setJson('sessions', state);
 }
 
+function summarizeText(value = '', max = 180) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function eventActor(req, fallbackUsername = '', fallbackRole = '') {
+  return {
+    username: String(req?.user?.username || fallbackUsername || 'system').trim() || 'system',
+    role: String(req?.user?.role || fallbackRole || '').trim() || 'system',
+  };
+}
+
+async function recordEvent(req, {
+  actorUsername = '',
+  actorRole = '',
+  kind = 'app',
+  action = 'action',
+  targetType = '',
+  targetId = '',
+  status = 'success',
+  message = '',
+  details = {},
+} = {}) {
+  const actor = eventActor(req, actorUsername, actorRole);
+  const event = {
+    id: randomUUID(),
+    createdAt: Date.now(),
+    actorUsername: actor.username,
+    actorRole: actor.role,
+    kind: String(kind || 'app').trim(),
+    action: String(action || 'action').trim(),
+    targetType: String(targetType || '').trim(),
+    targetId: String(targetId || '').trim(),
+    status: String(status || 'success').trim(),
+    message: summarizeText(message || `${action} ${targetType}`),
+    details: details && typeof details === 'object' ? details : {},
+  };
+  const store = await stateStore;
+  await store.appendEvent(event);
+  await store.pruneEvents(2000);
+  return event;
+}
+
 function pruneRevoked(state) {
   const now = Math.floor(Date.now() / 1000);
   for (const [jti, exp] of Object.entries(state.revoked || {})) {
@@ -1208,7 +1252,17 @@ app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req
   await saveSettings(next);
   clearAttempts(setupRateKey);
   res.cookie(COOKIE_NAME, sign(String(username).trim()), cookieOptions(req));
+  const event = await recordEvent(req, {
+    actorUsername: String(username).trim(),
+    actorRole: 'admin',
+    kind: 'auth',
+    action: 'setup-user',
+    targetType: 'user',
+    targetId: String(username).trim(),
+    message: `Created initial admin user ${String(username).trim()}.`,
+  });
   res.json({
+    event,
     settings: publicSettings(next, String(username).trim()),
     discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) },
   });
@@ -1260,7 +1314,21 @@ app.post('/api/setup/config', requireTrustedOrigin, auth, requirePermission('edi
       if (typeof existing?.content !== 'string') await saveWorkingConfig('');
     }
   }
+  const event = await recordEvent(req, {
+    kind: 'setup',
+    action: 'setup-config',
+    targetType: 'caddy',
+    targetId: next.configMode,
+    message: `Completed CaddyUI setup in ${next.configMode} mode.`,
+    details: {
+      configMode: next.configMode,
+      caddyfilePath: next.caddyfilePath,
+      caddyApiUrl: next.caddyApiUrl,
+      logPaths: next.logPaths,
+    },
+  });
   res.json({
+    event,
     settings: publicSettings(next, req.user.username),
     discovered: { caddyfiles: await scanCaddyfiles(), logfiles: await scanLogfiles(next) },
   });
@@ -1281,18 +1349,40 @@ app.post('/api/login', requireTrustedOrigin, async (req, res) => {
 
   clearAttempts(rateKey);
   res.cookie(COOKIE_NAME, sign(user.username), cookieOptions(req));
-  res.json({ settings: publicSettings(settings, user.username) });
+  const event = await recordEvent(req, {
+    actorUsername: user.username,
+    actorRole: user.role,
+    kind: 'auth',
+    action: 'login',
+    targetType: 'session',
+    targetId: user.username,
+    message: `${user.username} signed in.`,
+  });
+  res.json({ settings: publicSettings(settings, user.username), event });
 });
 
 app.post('/api/logout', requireTrustedOrigin, async (req, res) => {
   const token = req.cookies[COOKIE_NAME] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  let decoded = null;
   if (token) {
     try {
-      await revokeToken(jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] }));
+      decoded = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
+      await revokeToken(decoded);
     } catch {}
   }
   res.clearCookie(COOKIE_NAME, cookieOptions(req));
-  res.json({ ok: true });
+  const settings = await loadSettings();
+  const user = currentUserRecord(settings, decoded?.username || '');
+  const event = await recordEvent(req, {
+    actorUsername: user?.username || decoded?.username || 'unknown',
+    actorRole: user?.role || '',
+    kind: 'auth',
+    action: 'logout',
+    targetType: 'session',
+    targetId: user?.username || decoded?.username || '',
+    message: `${user?.username || decoded?.username || 'User'} signed out.`,
+  });
+  res.json({ ok: true, event });
 });
 
 app.post('/api/caddy/load', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
@@ -1580,7 +1670,15 @@ app.post('/api/config', requireTrustedOrigin, auth, requirePermission('edit'), a
     const { backup } = await applyConfigContent(settings, content, { backup: true });
     const parsed = await parseConfigWithMeta(content);
     await pruneProxyMetaForParsed(parsed);
-    res.json({ ok: true, backup, parsed, content });
+    const event = await recordEvent(req, {
+      kind: 'config',
+      action: 'save',
+      targetType: 'config',
+      targetId: settings.configMode,
+      message: `Saved Caddy configuration in ${settings.configMode} mode.`,
+      details: { backup, configMode: settings.configMode, path: settings.caddyfilePath || 'caddy://admin-api' },
+    });
+    res.json({ ok: true, backup, parsed, content, event });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1599,14 +1697,43 @@ app.get('/api/proxies/health', auth, requirePermission('edit'), async (_req, res
 app.post('/api/config/validate', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   const settings = await loadSettings();
   const content = typeof req.body?.content === 'string' ? req.body.content : (await readWorkingConfig()).content;
-  res.json(await validateConfigForSettings(settings, content));
+  const result = await validateConfigForSettings(settings, content);
+  const event = await recordEvent(req, {
+    kind: 'config',
+    action: 'validate',
+    targetType: 'config',
+    targetId: settings.configMode,
+    status: result.ok ? 'success' : 'warning',
+    message: result.ok ? 'Validated Caddy configuration.' : summarizeText(result.stderr || 'Caddy validation returned warnings.'),
+    details: {
+      configMode: settings.configMode,
+      ok: result.ok,
+      stdout: result.stdout || '',
+      stderr: result.stderr || '',
+    },
+  });
+  res.json({ ...result, event });
 });
 
 app.post('/api/config/format', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   const content = typeof req.body?.content === 'string' ? req.body.content : (await readWorkingConfig()).content;
   const result = await formatConfig(content);
-  if (result.ok) return res.json(result);
-  return res.status(result.unavailable ? 503 : 400).json(result);
+  const event = await recordEvent(req, {
+    kind: 'config',
+    action: 'format',
+    targetType: 'config',
+    targetId: 'caddyfile',
+    status: result.ok ? 'success' : 'error',
+    message: result.ok ? (result.changed ? 'Formatted Caddy configuration.' : 'Checked Caddy formatting; no changes needed.') : summarizeText(result.stderr || 'Caddy format failed.'),
+    details: {
+      ok: result.ok,
+      changed: result.changed,
+      stdout: result.stdout || '',
+      stderr: result.stderr || '',
+    },
+  });
+  if (result.ok) return res.json({ ...result, event });
+  return res.status(result.unavailable ? 503 : 400).json({ ...result, event });
 });
 
 app.post('/api/config/reload', requireTrustedOrigin, auth, requirePermission('edit'), async (_req, res) => {
@@ -1625,21 +1752,66 @@ app.post('/api/config/reload', requireTrustedOrigin, auth, requirePermission('ed
       });
       if (!response.ok) {
         const stderr = (await response.text()) || `Caddy API reload failed (${response.status}).`;
-        return res.status(400).json({ ok: false, code: response.status, stdout: '', stderr });
+        const event = await recordEvent(req, {
+          kind: 'config',
+          action: 'reload',
+          targetType: 'caddy',
+          targetId: 'admin-api',
+          status: 'error',
+          message: summarizeText(stderr),
+          details: { code: response.status, stdout: '', stderr },
+        });
+        return res.status(400).json({ ok: false, code: response.status, stdout: '', stderr, event });
       }
-      return res.json({ ok: true, code: 0, stdout: 'Reloaded Caddy via admin API.', stderr: '' });
+      const event = await recordEvent(req, {
+        kind: 'config',
+        action: 'reload',
+        targetType: 'caddy',
+        targetId: 'admin-api',
+        message: 'Reloaded Caddy via admin API.',
+      });
+      return res.json({ ok: true, code: 0, stdout: 'Reloaded Caddy via admin API.', stderr: '', event });
     } catch (error) {
-      return res.status(503).json({ ok: false, code: -1, stdout: '', stderr: error.message || 'Caddy API is unavailable.' });
+      const stderr = error.message || 'Caddy API is unavailable.';
+      const event = await recordEvent(req, {
+        kind: 'config',
+        action: 'reload',
+        targetType: 'caddy',
+        targetId: 'admin-api',
+        status: 'error',
+        message: summarizeText(stderr),
+        details: { code: -1, stdout: '', stderr },
+      });
+      return res.status(503).json({ ok: false, code: -1, stdout: '', stderr, event });
     }
   }
   const result = await run('caddy', ['reload', '--config', settings.caddyfilePath, '--adapter', 'caddyfile']);
   if (result.code === -1) {
+    const event = await recordEvent(req, {
+      kind: 'config',
+      action: 'reload',
+      targetType: 'caddy',
+      targetId: settings.caddyfilePath || 'caddyfile',
+      status: 'error',
+      message: 'Caddy binary is not available in this container. Run CaddyUI where it can execute caddy reload.',
+      details: { ...result },
+    });
     return res.status(503).json({
       ...result,
       stderr: 'Caddy binary is not available in this container. Run CaddyUI where it can execute caddy reload.',
+      event,
     });
   }
-  return res.status(result.ok ? 200 : 400).json(result);
+  const event = await recordEvent(req, {
+    kind: 'config',
+    action: 'reload',
+    targetType: 'caddy',
+    targetId: settings.caddyfilePath || 'caddyfile',
+    status: result.ok ? 'success' : 'error',
+    message: summarizeText(result.ok ? (result.stdout || 'Reloaded Caddy.') : (result.stderr || 'Caddy reload failed.')),
+    details: result,
+  });
+  return res.status(result.ok ? 200 : 400).json({ ...result, event });
 });
 
 app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
@@ -1653,7 +1825,19 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
     await applyConfigContent(settings, next);
     await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category, req.body?.description);
     const parsed = await parseConfigWithMeta(next);
-    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
+    const event = await recordEvent(req, {
+      kind: 'proxy',
+      action: 'create',
+      targetType: 'proxy',
+      targetId: String(req.body?.host || '').trim(),
+      message: `Created proxy ${String(req.body?.host || '').trim()}.`,
+      details: {
+        host: String(req.body?.host || '').trim(),
+        upstream: String(req.body?.upstream || '').trim(),
+        mode: settings.configMode,
+      },
+    });
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1678,7 +1862,19 @@ app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edi
     }
     await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category, req.body?.description);
     const parsed = await parseConfigWithMeta(next);
-    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
+    const event = await recordEvent(req, {
+      kind: 'proxy',
+      action: 'update',
+      targetType: 'proxy',
+      targetId: String(req.body?.host || previousSite?.addresses?.[0] || '').trim(),
+      message: `Updated proxy ${String(req.body?.host || previousSite?.addresses?.[0] || '').trim()}.`,
+      details: {
+        previousHost: previousSite?.addresses?.[0] || '',
+        host: String(req.body?.host || '').trim(),
+        upstream: String(req.body?.upstream || '').trim(),
+      },
+    });
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1697,7 +1893,18 @@ app.delete('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('
     await applyConfigContent(settings, next);
     await deleteProxyMetaForSite(previousSite);
     const parsed = await parseConfigWithMeta(next);
-    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
+    const event = await recordEvent(req, {
+      kind: 'proxy',
+      action: 'delete',
+      targetType: 'proxy',
+      targetId: String(previousSite?.addresses?.[0] || req.params.line).trim(),
+      message: `Deleted proxy ${String(previousSite?.addresses?.[0] || req.params.line).trim()}.`,
+      details: {
+        host: previousSite?.addresses?.[0] || '',
+        upstream: previousSite?.proxies?.[0]?.upstreams?.[0] || '',
+      },
+    });
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1714,7 +1921,16 @@ app.post('/api/proxies/:line/disabled', requireTrustedOrigin, auth, requirePermi
     }
     await applyConfigContent(settings, next);
     const parsed = await parseConfigWithMeta(next);
-    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
+    const targetSite = parsed.sites.find((site) => String(site.line) === String(req.params.line));
+    const event = await recordEvent(req, {
+      kind: 'proxy',
+      action: disabled ? 'disable' : 'enable',
+      targetType: 'proxy',
+      targetId: String(targetSite?.addresses?.[0] || req.params.line).trim(),
+      message: `${disabled ? 'Disabled' : 'Enabled'} proxy ${String(targetSite?.addresses?.[0] || req.params.line).trim()}.`,
+      details: { disabled, host: targetSite?.addresses?.[0] || '' },
+    });
+    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1729,7 +1945,16 @@ app.post('/api/middlewares', requireTrustedOrigin, auth, requirePermission('edit
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await applyConfigContent(settings, next);
-    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
+    const parsed = await parseConfigWithMeta(next);
+    const event = await recordEvent(req, {
+      kind: 'middleware',
+      action: 'create',
+      targetType: 'middleware',
+      targetId: String(req.body?.name || '').trim(),
+      message: `Created middleware ${String(req.body?.name || '').trim()}.`,
+      details: { name: String(req.body?.name || '').trim() },
+    });
+    res.json({ ok: true, validation, parsed, content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1744,7 +1969,16 @@ app.put('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermission(
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await applyConfigContent(settings, next);
-    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
+    const parsed = await parseConfigWithMeta(next);
+    const event = await recordEvent(req, {
+      kind: 'middleware',
+      action: 'update',
+      targetType: 'middleware',
+      targetId: String(req.body?.name || req.params.line).trim(),
+      message: `Updated middleware ${String(req.body?.name || req.params.line).trim()}.`,
+      details: { name: String(req.body?.name || '').trim(), line: req.params.line },
+    });
+    res.json({ ok: true, validation, parsed, content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1753,13 +1987,24 @@ app.put('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermission(
 app.delete('/api/middlewares/:line', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   try {
     const { settings, content } = await readWorkingConfig();
+    const previousParsed = await parseConfigCached(content);
+    const previousSnippet = previousParsed.snippets.find((snippet) => String(snippet.line) === String(req.params.line));
     const next = deleteBlockAtLine(content, req.params.line);
     const validation = await validateConfigForSettings(settings, next);
     if (!validation.ok && !validation.unavailable) {
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await applyConfigContent(settings, next);
-    res.json({ ok: true, validation, parsed: await parseConfigWithMeta(next), content: next });
+    const parsed = await parseConfigWithMeta(next);
+    const event = await recordEvent(req, {
+      kind: 'middleware',
+      action: 'delete',
+      targetType: 'middleware',
+      targetId: String(previousSnippet?.name || req.params.line).trim(),
+      message: `Deleted middleware ${String(previousSnippet?.name || req.params.line).trim()}.`,
+      details: { name: previousSnippet?.name || '', line: req.params.line },
+    });
+    res.json({ ok: true, validation, parsed, content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1771,6 +2016,12 @@ app.get('/api/logs', auth, requirePermission('view'), async (req, res) => {
   const bounded = Number.isFinite(requested) ? Math.max(10, Math.min(2000, Math.floor(requested))) : 200;
   const mode = ['all', 'files', 'journal'].includes(String(req.query.mode || 'all')) ? String(req.query.mode || 'all') : 'all';
   res.json({ logs: await collectLogs({ ...settings, logMode: mode }, bounded) });
+});
+
+app.get('/api/events', auth, requirePermission('view'), async (req, res) => {
+  const store = await stateStore;
+  const limit = Number(req.query.limit || 200);
+  res.json({ events: await store.listEvents({ limit }) });
 });
 
 app.get('/api/settings', auth, requirePermission('view'), async (req, res) => {
@@ -1866,7 +2117,19 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
       }
     }
   }
-  res.json({ settings: publicSettings(next, req.user.username) });
+  const event = await recordEvent(req, {
+    kind: 'settings',
+    action: 'update',
+    targetType: 'settings',
+    targetId: next.configMode,
+    message: `Updated settings and switched to ${next.configMode} mode.`,
+    details: {
+      configMode: next.configMode,
+      caddyfilePath: next.caddyfilePath,
+      caddyApiUrl: next.caddyApiUrl,
+    },
+  });
+  res.json({ settings: publicSettings(next, req.user.username), event });
 });
 
 app.post('/api/settings/test-api', requireTrustedOrigin, auth, requirePermission('edit'), requireRateLimit('test-api', 20, 60 * 1000), async (req, res) => {
@@ -1881,9 +2144,28 @@ app.post('/api/settings/test-api', requireTrustedOrigin, auth, requirePermission
   if (!providedUrl) return res.status(400).json({ error: 'Caddy API URL is required.' });
   try {
     const result = await testCaddyApiConnection(settings, { caddyApiUrl: providedUrl, caddyApiToken: providedSecret });
-    return res.status(result.ok ? 200 : 400).json(result);
+    const event = await recordEvent(req, {
+      kind: 'settings',
+      action: 'test-api',
+      targetType: 'caddy-api',
+      targetId: providedUrl,
+      status: result.ok ? 'success' : 'error',
+      message: result.message || (result.ok ? 'Connected to Caddy API.' : 'Caddy API test failed.'),
+      details: { url: providedUrl, status: result.status, ok: result.ok },
+    });
+    return res.status(result.ok ? 200 : 400).json({ ...result, event });
   } catch (error) {
-    return res.status(503).json({ ok: false, message: error.message || 'Caddy API is unavailable.' });
+    const message = error.message || 'Caddy API is unavailable.';
+    const event = await recordEvent(req, {
+      kind: 'settings',
+      action: 'test-api',
+      targetType: 'caddy-api',
+      targetId: providedUrl,
+      status: 'error',
+      message,
+      details: { url: providedUrl, ok: false },
+    });
+    return res.status(503).json({ ok: false, message, event });
   }
 });
 
@@ -1898,7 +2180,15 @@ app.post('/api/settings/reset-caddy-config', requireTrustedOrigin, auth, require
   await saveWorkingConfig(template);
   const parsed = await parseConfigWithMeta(template);
   await pruneProxyMetaForParsed(parsed);
-  return res.json({ ok: true, backup, content: template, parsed });
+  const event = await recordEvent(req, {
+    kind: 'settings',
+    action: 'reset-config',
+    targetType: 'config',
+    targetId: settings.configMode,
+    message: 'Reset Caddy configuration to the template.',
+    details: { backup, configMode: settings.configMode },
+  });
+  return res.json({ ok: true, backup, content: template, parsed, event });
 });
 
 app.post('/api/settings/reset-onboarding', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('reset-onboarding', 3, 15 * 60 * 1000), async (req, res) => {
@@ -1927,7 +2217,14 @@ app.post('/api/settings/reset-onboarding', requireTrustedOrigin, auth, requirePe
   await store.setJson('sessions', { revoked: {} });
   await store.pruneProxyMeta([]);
   res.clearCookie(COOKIE_NAME, cookieOptions(req));
-  return res.json({ ok: true, settings: statusSettings(next, false, '') });
+  const event = await recordEvent(req, {
+    kind: 'settings',
+    action: 'reset-onboarding',
+    targetType: 'app',
+    targetId: 'onboarding',
+    message: 'Reset CaddyUI to onboarding.',
+  });
+  return res.json({ ok: true, settings: statusSettings(next, false, ''), event });
 });
 
 app.put('/api/settings/update-channel', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('update-channel', 10, 5 * 60 * 1000), async (req, res) => {
@@ -1941,7 +2238,14 @@ app.put('/api/settings/update-channel', requireTrustedOrigin, auth, requirePermi
     updateChannel: channel,
   };
   await saveSettings(next);
-  res.json({ settings: publicSettings(next, req.user.username) });
+  const event = await recordEvent(req, {
+    kind: 'settings',
+    action: 'update-channel',
+    targetType: 'updates',
+    targetId: channel,
+    message: `Changed update channel to ${channel}.`,
+  });
+  res.json({ settings: publicSettings(next, req.user.username), event });
 });
 
 app.get('/api/users', auth, requirePermission('admin'), async (_req, res) => {
@@ -1969,7 +2273,15 @@ app.post('/api/users', requireTrustedOrigin, auth, requirePermission('admin'), r
     role,
   });
   await saveSettings(normalized);
-  res.json({ users: normalized.users.map(exposeUser) });
+  const event = await recordEvent(req, {
+    kind: 'user',
+    action: 'create',
+    targetType: 'user',
+    targetId: String(username).trim(),
+    message: `Created user ${String(username).trim()} with role ${role}.`,
+    details: { username: String(username).trim(), role },
+  });
+  res.json({ users: normalized.users.map(exposeUser), event });
 });
 
 app.put('/api/users/:username', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('update-user', 20, 15 * 60 * 1000), async (req, res) => {
@@ -1997,7 +2309,15 @@ app.put('/api/users/:username', requireTrustedOrigin, auth, requirePermission('a
   }
 
   await saveSettings(normalized);
-  res.json({ users: normalized.users.map(exposeUser) });
+  const event = await recordEvent(req, {
+    kind: 'user',
+    action: 'update',
+    targetType: 'user',
+    targetId: user.username,
+    message: `Updated user ${user.username}.`,
+    details: { username: user.username, role: user.role, passwordChanged: Boolean(password) },
+  });
+  res.json({ users: normalized.users.map(exposeUser), event });
 });
 
 app.delete('/api/users/:username', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('delete-user', 12, 15 * 60 * 1000), async (req, res) => {
@@ -2013,7 +2333,14 @@ app.delete('/api/users/:username', requireTrustedOrigin, auth, requirePermission
 
   normalized.users = normalized.users.filter((user) => user.username !== req.params.username);
   await saveSettings(normalized);
-  res.json({ users: normalized.users.map(exposeUser) });
+  const event = await recordEvent(req, {
+    kind: 'user',
+    action: 'delete',
+    targetType: 'user',
+    targetId: req.params.username,
+    message: `Deleted user ${req.params.username}.`,
+  });
+  res.json({ users: normalized.users.map(exposeUser), event });
 });
 
 app.post('/api/account/password', requireTrustedOrigin, auth, requirePermission('view'), requireRateLimit('change-password', 8, 15 * 60 * 1000), async (req, res) => {
@@ -2030,7 +2357,14 @@ app.post('/api/account/password', requireTrustedOrigin, auth, requirePermission(
 
   user.passwordHash = await bcrypt.hash(newPassword, 12);
   await saveSettings(normalized);
-  res.json({ ok: true });
+  const event = await recordEvent(req, {
+    kind: 'user',
+    action: 'change-password',
+    targetType: 'user',
+    targetId: req.user.username,
+    message: `Changed password for ${req.user.username}.`,
+  });
+  res.json({ ok: true, event });
 });
 
 app.get('/api/app/status', auth, requirePermission('view'), async (_req, res) => {
@@ -2061,7 +2395,15 @@ app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin
     stdio: 'ignore',
   });
   child.unref();
-  res.json({ ok: true, started: true });
+  const event = await recordEvent(req, {
+    kind: 'app',
+    action: 'update',
+    targetType: 'branch',
+    targetId: branch,
+    message: `Started app update from ${currentBranch} to ${branch}.`,
+    details: { currentBranch, targetBranch: branch },
+  });
+  res.json({ ok: true, started: true, event });
 });
 
 if (process.env.NODE_ENV === 'production') {

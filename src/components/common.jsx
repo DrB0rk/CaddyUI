@@ -14,7 +14,7 @@ export function Notice({ type = 'info', children }) {
   return <div className={`notice ${type}`}>{type === 'error' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}<span>{children}</span></div>;
 }
 
-export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, notifications = [], onDismissNotification, onNotificationAction, onClearNotifications }) {
+export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, notifications = [], onDismissNotification, onNotificationAction, onClearNotifications, onOpenNotification }) {
   const activeVersion = appInfo?.version || appInfo?.localVersion || appVersion;
   const targetVersion = appInfo?.availableVersion || appInfo?.remoteVersion || '';
   const shownVersion = updating && targetVersion ? targetVersion : activeVersion;
@@ -66,7 +66,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
             return (
               <div
                 key={notification.id}
-                className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')}`}
+                className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')} ${notification.eventId ? 'interactive' : ''}`}
                 style={{
                   zIndex: Math.max(20 - depth, 1),
                   transform: `scale(${scale})`,
@@ -74,6 +74,15 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
                   '--toast-text-mix': textMix,
                   '--toast-border-mix': borderMix,
                 }}
+                onClick={notification.eventId ? () => onOpenNotification?.(notification.id) : undefined}
+                role={notification.eventId ? 'button' : undefined}
+                tabIndex={notification.eventId ? 0 : undefined}
+                onKeyDown={notification.eventId ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onOpenNotification?.(notification.id);
+                  }
+                } : undefined}
               >
                 {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
                 <span>{notification.message}</span>
@@ -81,7 +90,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
                   <button
                     type="button"
                     className="top-feedback-action"
-                    onClick={() => onNotificationAction(notification.id)}
+                    onClick={(e) => { e.stopPropagation(); onNotificationAction(notification.id); }}
                     disabled={Boolean(notification.actionBusy)}
                   >
                     {notification.actionBusy ? 'Running...' : notification.actionLabel}
@@ -90,7 +99,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
                 <button
                   type="button"
                   className="icon-button top-feedback-close"
-                  onClick={() => onDismissNotification?.(notification.id)}
+                  onClick={(e) => { e.stopPropagation(); onDismissNotification?.(notification.id); }}
                   aria-label="Dismiss message"
                 >
                   ×

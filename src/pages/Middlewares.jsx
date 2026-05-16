@@ -284,7 +284,7 @@ export default function Middlewares({ config, setConfig, canEdit, theme, api, on
         body: JSON.stringify({ ...form, body: normalizedBody }),
       });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed }));
-      onConfigChanged?.('Middleware added.');
+      onConfigChanged?.('Middleware added.', data.event || null);
       setForm({ name: '', body: '' });
       setSuccess('Middleware added.');
     } catch (err) {
@@ -318,7 +318,7 @@ export default function Middlewares({ config, setConfig, canEdit, theme, api, on
         body: JSON.stringify({ ...edit, body: normalizedBody }),
       });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed }));
-      onConfigChanged?.('Middleware updated.');
+      onConfigChanged?.('Middleware updated.', data.event || null);
       setEdit(null);
       setSuccess('Middleware updated.');
     } catch (err) {
@@ -343,7 +343,7 @@ export default function Middlewares({ config, setConfig, canEdit, theme, api, on
       }
       const data = await api(`/api/middlewares/${item.line}`, { method: 'DELETE' });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed }));
-      onConfigChanged?.('Middleware deleted.');
+      onConfigChanged?.('Middleware deleted.', data.event || null);
       setSuccess('Middleware deleted.');
     } catch (err) {
       setError(err.message);

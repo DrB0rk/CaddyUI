@@ -177,6 +177,52 @@ sqlite_runtime_ok() {
     node -e "require('sqlite3'); process.stdout.write('ok')"
   ) >> "$INSTALL_LOG" 2>&1
 }
+sqlite_package_version() {
+  [[ -f "$INSTALL_DIR/node_modules/sqlite3/package.json" ]] || return 1
+  node -e '
+const fs = require("fs");
+const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+process.stdout.write(String(pkg.version || ""));
+' "$INSTALL_DIR/node_modules/sqlite3/package.json" 2>/dev/null
+}
+sqlite_host_key() {
+  node -p "[
+    process.platform,
+    process.arch,
+    process.versions.modules,
+    (() => { try { return process.report?.getReport?.().header?.glibcVersionRuntime ? 'glibc' : 'musl'; } catch { return 'unknown'; } })()
+  ].join('-')" 2>/dev/null
+}
+sqlite_cache_dir() {
+  local version="$1"
+  local host_key="$2"
+  printf '%s\n' "$INSTALL_DIR/.cache/sqlite3/${version}/${host_key}"
+}
+restore_cached_sqlite_binary() {
+  if [[ "$DRY_RUN" == "1" ]]; then return 0; fi
+  local version host_key cache_dir cached_binary target_binary
+  version="$(sqlite_package_version || true)"
+  host_key="$(sqlite_host_key || true)"
+  [[ -n "$version" && -n "$host_key" ]] || return 0
+  cache_dir="$(sqlite_cache_dir "$version" "$host_key")"
+  cached_binary="$cache_dir/node_sqlite3.node"
+  target_binary="$INSTALL_DIR/node_modules/sqlite3/build/Release/node_sqlite3.node"
+  [[ -f "$cached_binary" ]] || return 0
+  mkdir -p "$(dirname "$target_binary")"
+  cp "$cached_binary" "$target_binary"
+  printf '%s\n' "Reused cached sqlite3 binary for $host_key ($version)" >> "$INSTALL_LOG"
+}
+cache_sqlite_binary() {
+  if [[ "$DRY_RUN" == "1" ]]; then return 0; fi
+  local version host_key cache_dir target_binary
+  version="$(sqlite_package_version || true)"
+  host_key="$(sqlite_host_key || true)"
+  target_binary="$INSTALL_DIR/node_modules/sqlite3/build/Release/node_sqlite3.node"
+  [[ -n "$version" && -n "$host_key" && -f "$target_binary" ]] || return 0
+  cache_dir="$(sqlite_cache_dir "$version" "$host_key")"
+  mkdir -p "$cache_dir"
+  cp "$target_binary" "$cache_dir/node_sqlite3.node"
+}
 
 ensure_native_build_prereqs() {
   local pm
@@ -619,7 +665,9 @@ run_existing_update() {
   else
     run_quiet npm --prefix "$INSTALL_DIR" install
   fi
+  restore_cached_sqlite_binary
   ensure_sqlite_compat
+  cache_sqlite_binary
   ok "Dependencies installed"
 
   step "Building web interface"
@@ -700,7 +748,9 @@ if [[ -f "$INSTALL_DIR/package-lock.json" ]]; then
 else
   run_quiet npm --prefix "$INSTALL_DIR" install
 fi
+restore_cached_sqlite_binary
 ensure_sqlite_compat
+cache_sqlite_binary
 ok "Dependencies installed"
 
 step "Building web interface"

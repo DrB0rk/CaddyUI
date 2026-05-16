@@ -33,7 +33,11 @@ const localSettings = {
 const api = async (path, options = {}) => {
   const res = await fetch(path, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.stderr || `Request failed: ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.error || data.stderr || data.message || `Request failed: ${res.status}`);
+    error.payload = data;
+    throw error;
+  }
   return data;
 };
 
@@ -61,6 +65,12 @@ function parseValidationWarning(result = {}) {
   return { message, canFormat };
 }
 
+function summarizeNotificationMessage(message = '', max = 160) {
+  const text = String(message || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
 export default function App() {
   const [status, setStatus] = useState(localTest ? { settings: localSettings, authenticated: true, discovered: { caddyfiles: [], logfiles: [] } } : null);
   const [settings, setSettings] = useState(localTest ? localSettings : null);
@@ -78,6 +88,8 @@ export default function App() {
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [configLoading, setConfigLoading] = useState(false);
+  const [logsView, setLogsView] = useState('system');
+  const [selectedEventId, setSelectedEventId] = useState('');
 
   const role = settings?.role || '';
   const canEdit = canEditRole(role) || localTest;
@@ -87,11 +99,20 @@ export default function App() {
     setNotifications((current) => current.filter((notification) => notification.id !== id));
   };
 
+  const openEventLog = (eventId = '') => {
+    const id = String(eventId || '').trim();
+    if (!id) return;
+    setSelectedEventId(id);
+    setLogsView('events');
+    setPage('logs');
+  };
+
   const pushNotification = (notification) => {
     const id = notification.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const entry = {
       durationMs: notification.durationMs ?? 5200,
       ...notification,
+      message: summarizeNotificationMessage(notification.message || ''),
       id,
     };
     setNotifications((current) => [entry, ...current].slice(0, 6));
@@ -102,16 +123,17 @@ export default function App() {
   };
 
   const updateNotification = (id, patch) => {
-    setNotifications((current) => current.map((notification) => (notification.id === id ? { ...notification, ...patch } : notification)));
+    setNotifications((current) => current.map((notification) => (notification.id === id ? { ...notification, ...patch, ...(patch?.message ? { message: summarizeNotificationMessage(patch.message) } : {}) } : notification)));
   };
 
-  const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.') => {
+  const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.', event = null) => {
     if (localTest) return;
     if ((settings?.configMode || 'api') === 'api') {
       pushNotification({
         ok: true,
         level: 'success',
         message: `${prefix} Applied live via Caddy API.`,
+        eventId: event?.id || '',
       });
       return;
     }
@@ -123,6 +145,7 @@ export default function App() {
       actionLabel: 'Reload Caddy',
       actionBusy: false,
       durationMs: 9000,
+      eventId: event?.id || '',
     });
   };
 
@@ -167,7 +190,7 @@ export default function App() {
     try {
       const result = await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) });
       if (result.ok) {
-        pushNotification({ ok: true, level: 'success', message: result.stdout || 'Validation passed.' });
+        pushNotification({ ok: true, level: 'success', message: result.stdout || 'Validation passed.', eventId: result.event?.id || '' });
       } else {
         const parsedWarning = parseValidationWarning(result);
         pushNotification({
@@ -178,10 +201,11 @@ export default function App() {
           actionLabel: parsedWarning.canFormat ? 'Run caddy fmt --overwrite' : '',
           actionBusy: false,
           durationMs: parsedWarning.canFormat ? 9000 : 6500,
+          eventId: result.event?.id || '',
         });
       }
     }
-    catch (e) { pushNotification({ ok: false, message: e.message }); }
+    catch (e) { pushNotification({ ok: false, message: e.message, eventId: e.payload?.event?.id || '' }); }
     finally { setCaddyBusy(false); }
   };
 
@@ -200,7 +224,7 @@ export default function App() {
       });
       if (!formatResult.changed) {
         dismissNotification(notificationId);
-        pushNotification({ ok: true, level: 'success', message: 'Config is already formatted.' });
+        pushNotification({ ok: true, level: 'success', message: 'Config is already formatted.', eventId: formatResult.event?.id || '' });
         return;
       }
       const nextContent = String(formatResult.content || '');
@@ -210,10 +234,10 @@ export default function App() {
       });
       setConfig((current) => ({ ...current, content: nextContent, parsed: saved.parsed, health: saved.health || current.health }));
       dismissNotification(notificationId);
-      notifyConfigChangedNeedsReload('Formatted and saved config.');
+      notifyConfigChangedNeedsReload('Formatted and saved config.', saved.event || formatResult.event || null);
     } catch (e) {
       if (notificationId) updateNotification(notificationId, { actionBusy: false });
-      pushNotification({ ok: false, level: 'error', message: e.message || 'Formatting fix failed.' });
+      pushNotification({ ok: false, level: 'error', message: e.message || 'Formatting fix failed.', eventId: e.payload?.event?.id || '' });
     } finally {
     }
   };
@@ -222,8 +246,8 @@ export default function App() {
     if (!canEdit) return;
     if (localTest) { pushNotification({ ok: true, message: 'Local test mode.' }); setReloadConfirmOpen(false); return; }
     setCaddyBusy(true); setError('');
-    try { const result = await api('/api/config/reload', { method: 'POST' }); pushNotification({ ok: result.ok, message: result.ok ? (result.stdout || 'Reloaded Caddy.') : (result.stderr || 'Reload failed.') }); setReloadConfirmOpen(false); }
-    catch (e) { pushNotification({ ok: false, message: e.message }); }
+    try { const result = await api('/api/config/reload', { method: 'POST' }); pushNotification({ ok: result.ok, message: result.ok ? (result.stdout || 'Reloaded Caddy.') : (result.stderr || 'Reload failed.'), eventId: result.event?.id || '' }); setReloadConfirmOpen(false); }
+    catch (e) { pushNotification({ ok: false, message: e.message, eventId: e.payload?.event?.id || '' }); }
     finally { setCaddyBusy(false); }
   };
 
@@ -258,10 +282,11 @@ export default function App() {
       const targetVersion = baseline?.availableVersion || baseline?.remoteVersion || '';
       setUpdateMessage(targetVersion ? `Updating to ${targetVersion}...` : 'Updating...');
 
-      await api('/api/app/update', {
+      const updateStart = await api('/api/app/update', {
         method: 'POST',
         body: JSON.stringify({ updateChannel }),
       });
+      const updateEventId = updateStart?.event?.id || '';
       const started = Date.now();
       let confirmedReadyCount = 0;
       while (Date.now() - started < 240000) {
@@ -311,7 +336,7 @@ export default function App() {
             }));
             setUpdating(false);
             setUpdateMessage('');
-            pushNotification({ ok: true, message: `Updated to ${nextVersion}. Reloading...`, durationMs: 3000 });
+            pushNotification({ ok: true, message: `Updated to ${nextVersion}. Reloading...`, durationMs: 3000, eventId: updateEventId });
             const url = new URL(window.location.href);
             url.searchParams.set('v', String(Date.now()));
             setTimeout(() => window.location.replace(url.toString()), 600);
@@ -324,7 +349,7 @@ export default function App() {
       }
       setUpdating(false);
       setUpdateMessage('');
-      pushNotification({ ok: false, message: 'Update is still running or not ready yet. Check install log.' });
+      pushNotification({ ok: false, message: 'Update is still running or not ready yet. Check install log.', eventId: updateEventId });
     } catch (e) {
       setError(e.message);
       setUpdating(false);
@@ -360,6 +385,10 @@ export default function App() {
         const current = notifications.find((notification) => notification.id === notificationId);
         if (current?.actionId === 'format-config') runFormatFixGlobal(notificationId);
         if (current?.actionId === 'reload-caddy') setReloadConfirmOpen(true);
+      }}
+      onOpenNotification={(notificationId) => {
+        const current = notifications.find((notification) => notification.id === notificationId);
+        if (current?.eventId) openEventLog(current.eventId);
       }}
     >
       {error && <Notice type="error">{error}</Notice>}
@@ -406,7 +435,7 @@ export default function App() {
           onConfigChanged={notifyConfigChangedNeedsReload}
         />
       )}
-      {page === 'logs' && <Logs api={api} />}
+      {page === 'logs' && <Logs api={api} initialView={logsView} selectedEventId={selectedEventId} onSelectView={setLogsView} />}
       {page === 'settings' && (
         <SettingsPage settings={settings} setSettings={setSettings} canEdit={canEdit} canAdmin={canAdmin} api={api} notify={pushNotification} refreshConfig={refreshConfig} setStatus={setStatus} />
       )}

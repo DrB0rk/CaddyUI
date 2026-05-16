@@ -66,9 +66,9 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
       .catch(() => {});
   }, [canAdmin]);
 
-  const setNotice = (text = '') => {
+  const setNotice = (text = '', eventId = '') => {
     setMsg(text);
-    if (text) notify?.({ ok: !/error|invalid|failed|forbidden/i.test(text), level: /error|invalid|failed|forbidden/i.test(text) ? 'error' : 'success', message: text });
+    if (text) notify?.({ ok: !/error|invalid|failed|forbidden/i.test(text), level: /error|invalid|failed|forbidden/i.test(text) ? 'error' : 'success', message: text, eventId });
   };
 
   const scanFiles = async () => {
@@ -131,7 +131,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
         body: JSON.stringify(payload),
       });
       setSettings(r.settings);
-      setNotice('Settings saved.');
+      setNotice('Settings saved.', r.event?.id || '');
     } catch (err) {
       setMsg(err.message);
     }
@@ -153,9 +153,9 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
           caddyApiSecret: form.caddyApiToken.trim(),
         }),
       });
-      notify?.({ ok: true, level: 'success', message: res.message || 'Connected to Caddy API.' });
+      notify?.({ ok: true, level: 'success', message: res.message || 'Connected to Caddy API.', eventId: res.event?.id || '' });
     } catch (err) {
-      notify?.({ ok: false, level: 'error', message: err.message || 'Caddy API test failed.' });
+      notify?.({ ok: false, level: 'error', message: err.message || 'Caddy API test failed.', eventId: err.payload?.event?.id || '' });
       setMsg(err.message);
     } finally {
       setTestingApi(false);
@@ -179,7 +179,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
         body: JSON.stringify({ updateChannel }),
       });
       setSettings(r.settings);
-      setNotice('Update channel saved.');
+      setNotice('Update channel saved.', r.event?.id || '');
     } catch (err) {
       setMsg(err.message);
     }
@@ -191,7 +191,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
       const res = await api('/api/users', { method: 'POST', body: JSON.stringify(userForm) });
       setUsers(res.users);
       setUserForm({ username: '', password: '', role: 'view' });
-      setNotice('User added.');
+      setNotice('User added.', res.event?.id || '');
     } catch (err) {
       setMsg(err.message);
     }
@@ -204,7 +204,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
         body: JSON.stringify({ role }),
       });
       setUsers(res.users);
-      setNotice(`Updated ${username}.`);
+      setNotice(`Updated ${username}.`, res.event?.id || '');
     } catch (err) {
       setMsg(err.message);
     }
@@ -214,7 +214,7 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
     try {
       const res = await api(`/api/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
       setUsers(res.users);
-      setNotice('User deleted.');
+      setNotice('User deleted.', res.event?.id || '');
     } catch (err) {
       setMsg(err.message);
     }
@@ -223,9 +223,9 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
   const changePassword = async (e) => {
     e.preventDefault();
     try {
-      await api('/api/account/password', { method: 'POST', body: JSON.stringify(passwordForm) });
+      const res = await api('/api/account/password', { method: 'POST', body: JSON.stringify(passwordForm) });
       setPasswordForm({ currentPassword: '', newPassword: '' });
-      setNotice('Password updated.');
+      setNotice('Password updated.', res.event?.id || '');
     } catch (err) {
       setMsg(err.message);
     }
@@ -242,16 +242,16 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
         });
         setDangerModal({ open: false, kind: '', value: '' });
         setConfigFromReset(res);
-        notify?.({ ok: true, level: 'warning', message: 'Caddy config reset to template.' });
+        notify?.({ ok: true, level: 'warning', message: 'Caddy config reset to template.', eventId: res.event?.id || '' });
         return;
       }
       if (dangerModal.kind === 'reset-onboarding') {
-        await api('/api/settings/reset-onboarding', {
+        const res = await api('/api/settings/reset-onboarding', {
           method: 'POST',
           body: JSON.stringify({ username: dangerModal.value.trim() }),
         });
         setDangerModal({ open: false, kind: '', value: '' });
-        notify?.({ ok: true, level: 'warning', message: 'CaddyUI reset to onboarding.' });
+        notify?.({ ok: true, level: 'warning', message: 'CaddyUI reset to onboarding.', eventId: res.event?.id || '' });
         window.location.reload();
       }
     } catch (err) {
