@@ -38,9 +38,13 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
       proxy_key TEXT PRIMARY KEY,
       tags_json TEXT NOT NULL,
       category TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       updated_at INTEGER NOT NULL
     );
   `);
+  try {
+    await db.exec(`ALTER TABLE proxy_meta ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
+  } catch {}
 
   if (settingsPath && fssync.existsSync(settingsPath)) {
     const existing = await db.get('SELECT key FROM kv_store WHERE key = ?', 'settings');
@@ -148,7 +152,7 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
     },
 
     async getProxyMetaMap() {
-      const rows = await db.all('SELECT proxy_key, tags_json, category FROM proxy_meta');
+      const rows = await db.all('SELECT proxy_key, tags_json, category, description FROM proxy_meta');
       const result = {};
       for (const row of rows || []) {
         let tags = [];
@@ -156,29 +160,36 @@ export async function createStateStore({ dataDir, dbPath, settingsPath, sessionP
           const parsed = JSON.parse(String(row.tags_json || '[]'));
           if (Array.isArray(parsed)) tags = parsed.map((x) => String(x || '').trim()).filter(Boolean);
         } catch {}
-        result[row.proxy_key] = { tags, category: String(row.category || '').trim() };
+        result[row.proxy_key] = {
+          tags,
+          category: String(row.category || '').trim(),
+          description: String(row.description || '').trim(),
+        };
       }
       return result;
     },
 
-    async setProxyMeta(proxyKey, tags = [], category = '') {
+    async setProxyMeta(proxyKey, tags = [], category = '', description = '') {
       const key = String(proxyKey || '').trim();
       if (!key) return;
       const cleanedTags = [...new Set((Array.isArray(tags) ? tags : []).map((x) => String(x || '').trim()).filter(Boolean))];
       const cleanedCategory = String(category || '').trim();
+      const cleanedDescription = String(description || '').trim();
       const now = Date.now();
       await db.run(
         `
-          INSERT INTO proxy_meta (proxy_key, tags_json, category, updated_at)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO proxy_meta (proxy_key, tags_json, category, description, updated_at)
+          VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(proxy_key) DO UPDATE
           SET tags_json = excluded.tags_json,
               category = excluded.category,
+              description = excluded.description,
               updated_at = excluded.updated_at
         `,
         key,
         JSON.stringify(cleanedTags),
         cleanedCategory,
+        cleanedDescription,
         now
       );
     },

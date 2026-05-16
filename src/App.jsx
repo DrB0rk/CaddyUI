@@ -17,7 +17,9 @@ const localSettings = {
   userConfigured: true,
   caddyConfigured: true,
   configured: true,
+  configMode: 'api',
   caddyfilePath: 'Caddyfile',
+  caddyApiUrl: 'http://127.0.0.1:2019',
   logPaths: ['/var/log/caddy/access.log'],
   updateChannel: 'stable',
   trustProxyHops: 0,
@@ -74,24 +76,53 @@ export default function App() {
   const [updateMessage, setUpdateMessage] = useState('');
   const [caddyBusy, setCaddyBusy] = useState(false);
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
-  const [actionResult, setActionResult] = useState(null);
+  const [notifications, setNotifications] = useState([]);
   const [configLoading, setConfigLoading] = useState(false);
-  const [actionBusy, setActionBusy] = useState(false);
 
   const role = settings?.role || '';
   const canEdit = canEditRole(role) || localTest;
   const canAdmin = canAdminRole(role) || localTest;
 
+  const dismissNotification = (id) => {
+    setNotifications((current) => current.filter((notification) => notification.id !== id));
+  };
+
+  const pushNotification = (notification) => {
+    const id = notification.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const entry = {
+      durationMs: notification.durationMs ?? 5200,
+      ...notification,
+      id,
+    };
+    setNotifications((current) => [entry, ...current].slice(0, 6));
+    if (entry.durationMs > 0) {
+      window.setTimeout(() => dismissNotification(id), entry.durationMs);
+    }
+    return id;
+  };
+
+  const updateNotification = (id, patch) => {
+    setNotifications((current) => current.map((notification) => (notification.id === id ? { ...notification, ...patch } : notification)));
+  };
+
   const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.') => {
     if (localTest) return;
-    if ((settings?.configMode || 'file') === 'api') return;
-    setActionResult({
+    if ((settings?.configMode || 'api') === 'api') {
+      pushNotification({
+        ok: true,
+        level: 'success',
+        message: `${prefix} Applied live via Caddy API.`,
+      });
+      return;
+    }
+    pushNotification({
       ok: false,
       level: 'warning',
       message: `${prefix} Caddy has not been reloaded, so changes are not live yet.`,
       actionId: 'reload-caddy',
       actionLabel: 'Reload Caddy',
       actionBusy: false,
+      durationMs: 9000,
     });
   };
 
@@ -131,36 +162,36 @@ export default function App() {
 
   const validateCaddyGlobal = async () => {
     if (!canEdit) return;
-    if (localTest) { setActionResult({ ok: true, message: 'Local test mode' }); return; }
+    if (localTest) { pushNotification({ ok: true, message: 'Local test mode.' }); return; }
     setCaddyBusy(true); setError('');
     try {
       const result = await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) });
       if (result.ok) {
-        setActionResult({ ok: true, level: 'success', message: result.stdout || 'Validation passed.' });
+        pushNotification({ ok: true, level: 'success', message: result.stdout || 'Validation passed.' });
       } else {
         const parsedWarning = parseValidationWarning(result);
-        setActionResult({
+        pushNotification({
           ok: false,
           level: parsedWarning.canFormat ? 'warning' : 'error',
           message: parsedWarning.message || 'Validation failed.',
           actionId: parsedWarning.canFormat ? 'format-config' : '',
           actionLabel: parsedWarning.canFormat ? 'Run caddy fmt --overwrite' : '',
           actionBusy: false,
+          durationMs: parsedWarning.canFormat ? 9000 : 6500,
         });
       }
     }
-    catch (e) { setActionResult({ ok: false, message: e.message }); }
+    catch (e) { pushNotification({ ok: false, message: e.message }); }
     finally { setCaddyBusy(false); }
   };
 
-  const runFormatFixGlobal = async () => {
-    if (!canEdit || actionBusy) return;
+  const runFormatFixGlobal = async (notificationId) => {
+    if (!canEdit) return;
     if (localTest) {
-      setActionResult({ ok: false, level: 'error', message: 'Formatting fix is not available in local test mode.' });
+      pushNotification({ ok: false, level: 'error', message: 'Formatting fix is not available in local test mode.' });
       return;
     }
-    setActionBusy(true);
-    setActionResult((current) => (current ? { ...current, actionBusy: true } : current));
+    if (notificationId) updateNotification(notificationId, { actionBusy: true });
     setError('');
     try {
       const formatResult = await api('/api/config/format', {
@@ -168,7 +199,8 @@ export default function App() {
         body: JSON.stringify({ content: config?.content || '' }),
       });
       if (!formatResult.changed) {
-        setActionResult({ ok: true, level: 'success', message: 'Config is already formatted.' });
+        dismissNotification(notificationId);
+        pushNotification({ ok: true, level: 'success', message: 'Config is already formatted.' });
         return;
       }
       const nextContent = String(formatResult.content || '');
@@ -177,24 +209,21 @@ export default function App() {
         body: JSON.stringify({ content: nextContent, validate: true }),
       });
       setConfig((current) => ({ ...current, content: nextContent, parsed: saved.parsed, health: saved.health || current.health }));
-      if ((settings?.configMode || 'file') === 'api') {
-        setActionResult({ ok: true, level: 'success', message: 'Formatted and saved config.' });
-      } else {
-        notifyConfigChangedNeedsReload('Formatted and saved config.');
-      }
+      dismissNotification(notificationId);
+      notifyConfigChangedNeedsReload('Formatted and saved config.');
     } catch (e) {
-      setActionResult({ ok: false, level: 'error', message: e.message || 'Formatting fix failed.' });
+      if (notificationId) updateNotification(notificationId, { actionBusy: false });
+      pushNotification({ ok: false, level: 'error', message: e.message || 'Formatting fix failed.' });
     } finally {
-      setActionBusy(false);
     }
   };
 
   const reloadCaddyGlobal = async () => {
     if (!canEdit) return;
-    if (localTest) { setActionResult({ ok: true, message: 'Local test mode' }); setReloadConfirmOpen(false); return; }
+    if (localTest) { pushNotification({ ok: true, message: 'Local test mode.' }); setReloadConfirmOpen(false); return; }
     setCaddyBusy(true); setError('');
-    try { const result = await api('/api/config/reload', { method: 'POST' }); setActionResult({ ok: result.ok, message: result.ok ? (result.stdout || 'Reloaded Caddy') : (result.stderr || 'Reload failed') }); setReloadConfirmOpen(false); }
-    catch (e) { setActionResult({ ok: false, message: e.message }); }
+    try { const result = await api('/api/config/reload', { method: 'POST' }); pushNotification({ ok: result.ok, message: result.ok ? (result.stdout || 'Reloaded Caddy.') : (result.stderr || 'Reload failed.') }); setReloadConfirmOpen(false); }
+    catch (e) { pushNotification({ ok: false, message: e.message }); }
     finally { setCaddyBusy(false); }
   };
 
@@ -282,7 +311,7 @@ export default function App() {
             }));
             setUpdating(false);
             setUpdateMessage('');
-            setActionResult({ ok: true, message: `Updated to ${nextVersion}. Reloading...` });
+            pushNotification({ ok: true, message: `Updated to ${nextVersion}. Reloading...`, durationMs: 3000 });
             const url = new URL(window.location.href);
             url.searchParams.set('v', String(Date.now()));
             setTimeout(() => window.location.replace(url.toString()), 600);
@@ -295,7 +324,7 @@ export default function App() {
       }
       setUpdating(false);
       setUpdateMessage('');
-      setActionResult({ ok: false, message: 'Update is still running or not ready yet. Check install log.' });
+      pushNotification({ ok: false, message: 'Update is still running or not ready yet. Check install log.' });
     } catch (e) {
       setError(e.message);
       setUpdating(false);
@@ -324,11 +353,13 @@ export default function App() {
       onConfirmReloadCaddy={() => setReloadConfirmOpen(true)}
       caddyBusy={caddyBusy}
       appVersion={APP_VERSION}
-      actionResult={actionResult}
-      onDismissActionResult={() => setActionResult(null)}
-      onActionResultAction={() => {
-        if (actionResult?.actionId === 'format-config') runFormatFixGlobal();
-        if (actionResult?.actionId === 'reload-caddy') setReloadConfirmOpen(true);
+      notifications={notifications}
+      onDismissNotification={dismissNotification}
+      onClearNotifications={() => setNotifications([])}
+      onNotificationAction={(notificationId) => {
+        const current = notifications.find((notification) => notification.id === notificationId);
+        if (current?.actionId === 'format-config') runFormatFixGlobal(notificationId);
+        if (current?.actionId === 'reload-caddy') setReloadConfirmOpen(true);
       }}
     >
       {error && <Notice type="error">{error}</Notice>}
@@ -377,7 +408,7 @@ export default function App() {
       )}
       {page === 'logs' && <Logs api={api} />}
       {page === 'settings' && (
-        <SettingsPage settings={settings} setSettings={setSettings} canEdit={canEdit} canAdmin={canAdmin} api={api} />
+        <SettingsPage settings={settings} setSettings={setSettings} canEdit={canEdit} canAdmin={canAdmin} api={api} notify={pushNotification} refreshConfig={refreshConfig} setStatus={setStatus} />
       )}
       <ReloadConfirmModal
         open={reloadConfirmOpen}

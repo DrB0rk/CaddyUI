@@ -14,7 +14,7 @@ export function Notice({ type = 'info', children }) {
   return <div className={`notice ${type}`}>{type === 'error' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}<span>{children}</span></div>;
 }
 
-export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, actionResult, onDismissActionResult, onActionResultAction }) {
+export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, notifications = [], onDismissNotification, onNotificationAction, onClearNotifications }) {
   const activeVersion = appInfo?.version || appInfo?.localVersion || appVersion;
   const targetVersion = appInfo?.availableVersion || appInfo?.remoteVersion || '';
   const shownVersion = updating && targetVersion ? targetVersion : activeVersion;
@@ -50,16 +50,37 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
           <button onClick={onLogout}>Logout</button>
         </div>
       </header>
-      {actionResult && (
-        <div className={`top-feedback ${actionResult.level || (actionResult.ok ? 'success' : 'error')}`} role="status" aria-live="polite">
-          {actionResult.level === 'warning' ? <AlertTriangle size={16} /> : actionResult.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-          <span>{actionResult.message}</span>
-          {actionResult.actionLabel && onActionResultAction && (
-            <button type="button" className="top-feedback-action" onClick={onActionResultAction} disabled={Boolean(actionResult.actionBusy)}>
-              {actionResult.actionBusy ? 'Running...' : actionResult.actionLabel}
-            </button>
+      {notifications.length > 0 && (
+        <div className="toast-stack" role="status" aria-live="polite">
+          {notifications.length > 1 && (
+            <div className="toast-stack-actions">
+              <button type="button" onClick={onClearNotifications}>Clear all</button>
+            </div>
           )}
-          <button type="button" className="icon-button top-feedback-close" onClick={onDismissActionResult} aria-label="Dismiss message">×</button>
+          {notifications.map((notification) => (
+            <div key={notification.id} className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')}`}>
+              {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+              <span>{notification.message}</span>
+              {notification.actionLabel && onNotificationAction && (
+                <button
+                  type="button"
+                  className="top-feedback-action"
+                  onClick={() => onNotificationAction(notification.id)}
+                  disabled={Boolean(notification.actionBusy)}
+                >
+                  {notification.actionBusy ? 'Running...' : notification.actionLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-button top-feedback-close"
+                onClick={() => onDismissNotification?.(notification.id)}
+                aria-label="Dismiss message"
+              >
+                ×
+              </button>
+            </div>
+          ))}
         </div>
       )}
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -114,14 +135,14 @@ export function AuthGate({ status, onReady, api }) {
   const needsConfig = status?.settings?.userConfigured && status?.authenticated && !status?.settings?.caddyConfigured;
   const discovered = status?.discovered || { caddyfiles: [], logfiles: [] };
   const [userForm, setUserForm] = useState({ username: '', password: '', setupToken: '' });
-  const [configForm, setConfigForm] = useState({ caddyfilePath: discovered.caddyfiles?.[0]?.path || '', logPaths: (discovered.logfiles || []).map((f) => f.path).join('\n') });
+  const [configForm, setConfigForm] = useState({ configMode: status?.settings?.configMode || 'api', caddyfilePath: discovered.caddyfiles?.[0]?.path || '', caddyApiUrl: status?.settings?.caddyApiUrl || 'http://127.0.0.1:2019', logPaths: (discovered.logfiles || []).map((f) => f.path).join('\n') });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const submitUser = async (e) => { e.preventDefault(); setBusy(true); setError(''); try { const path = needsLogin ? '/api/login' : '/api/setup/user'; const payload = needsLogin ? { username: userForm.username, password: userForm.password } : userForm; onReady(await api(path, { method: 'POST', body: JSON.stringify(payload) })); } catch (err) { setError(err.message); } finally { setBusy(false); } };
-  const submitConfig = async (e) => { e.preventDefault(); setBusy(true); setError(''); try { onReady(await api('/api/setup/config', { method: 'POST', body: JSON.stringify({ caddyfilePath: configForm.caddyfilePath, logPaths: configForm.logPaths.split('\n').map((x) => x.trim()).filter(Boolean) }) })); } catch (err) { setError(err.message); } finally { setBusy(false); } };
+  const submitConfig = async (e) => { e.preventDefault(); setBusy(true); setError(''); try { onReady(await api('/api/setup/config', { method: 'POST', body: JSON.stringify({ configMode: configForm.configMode, caddyfilePath: configForm.caddyfilePath, caddyApiUrl: configForm.caddyApiUrl, logPaths: configForm.logPaths.split('\n').map((x) => x.trim()).filter(Boolean) }) })); } catch (err) { setError(err.message); } finally { setBusy(false); } };
 
-  if (needsConfig) return <div className="auth-page"><form className="auth-card" onSubmit={submitConfig}><h1>CaddyUI</h1><p>Admin user created. Choose the Caddyfile and log files.</p>{error && <Notice type="error">{error}</Notice>}<label>Caddyfile path<input value={configForm.caddyfilePath} onChange={(e) => setConfigForm({ ...configForm, caddyfilePath: e.target.value })} /></label>{discovered.caddyfiles?.length > 0 && <div className="discover"><b>Discovered Caddyfiles</b>{discovered.caddyfiles.map((f) => <button type="button" key={f.path} onClick={() => setConfigForm({ ...configForm, caddyfilePath: f.path })}>{f.path}</button>)}</div>}<label>Log paths, one per line<textarea rows="5" value={configForm.logPaths} placeholder="/var/log/caddy/access.log" onChange={(e) => setConfigForm({ ...configForm, logPaths: e.target.value })} /></label>{discovered.logfiles?.length > 0 && <div className="discover"><b>Discovered log files</b>{discovered.logfiles.map((f) => <button type="button" key={f.path} onClick={() => { const lines = new Set(configForm.logPaths.split('\n').map((x) => x.trim()).filter(Boolean)); lines.add(f.path); setConfigForm({ ...configForm, logPaths: [...lines].join('\n') }); }}>{f.path}</button>)}</div>}<button className="primary" disabled={busy}>{busy ? <Loader2 className="spin" /> : <FileCode2 size={16} />}Save Caddy configuration</button></form></div>;
+  if (needsConfig) return <div className="auth-page"><form className="auth-card" onSubmit={submitConfig}><h1>CaddyUI</h1><p>Admin user created. Choose API mode or file mode, then set the config and log sources.</p>{error && <Notice type="error">{error}</Notice>}<label>Config mode<select value={configForm.configMode} onChange={(e) => setConfigForm({ ...configForm, configMode: e.target.value })}><option value="api">api</option><option value="file">file</option></select></label><label>Caddy API URL<input value={configForm.caddyApiUrl} onChange={(e) => setConfigForm({ ...configForm, caddyApiUrl: e.target.value })} placeholder="http://127.0.0.1:2019" /></label><label>Caddyfile path<input value={configForm.caddyfilePath} onChange={(e) => setConfigForm({ ...configForm, caddyfilePath: e.target.value })} readOnly={configForm.configMode === 'api'} /></label>{discovered.caddyfiles?.length > 0 && <div className="discover"><b>Discovered Caddyfiles</b>{discovered.caddyfiles.map((f) => <button type="button" key={f.path} onClick={() => setConfigForm({ ...configForm, caddyfilePath: f.path })}>{f.path}</button>)}</div>}<label>Log paths, one per line<textarea rows="5" value={configForm.logPaths} placeholder="/var/log/caddy/access.log" onChange={(e) => setConfigForm({ ...configForm, logPaths: e.target.value })} /></label>{discovered.logfiles?.length > 0 && <div className="discover"><b>Discovered log files</b>{discovered.logfiles.map((f) => <button type="button" key={f.path} onClick={() => { const lines = new Set(configForm.logPaths.split('\n').map((x) => x.trim()).filter(Boolean)); lines.add(f.path); setConfigForm({ ...configForm, logPaths: [...lines].join('\n') }); }}>{f.path}</button>)}</div>}<button className="primary" disabled={busy}>{busy ? <Loader2 className="spin" /> : <FileCode2 size={16} />}Save Caddy configuration</button></form></div>;
 
   return <div className="auth-page"><form className="auth-card" onSubmit={submitUser}><h1>CaddyUI</h1><p>{needsLogin ? 'Sign in to continue.' : 'First create the admin user. Caddy configuration is selected in the next step.'}</p>{error && <Notice type="error">{error}</Notice>}<label>Username<input value={userForm.username} onChange={(e) => setUserForm({ ...userForm, username: e.target.value })} /></label><label>Password<input type="password" minLength={8} value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} /></label>{!needsLogin && status?.settings?.setupTokenRequired && <label>Setup token<input value={userForm.setupToken} onChange={(e) => setUserForm({ ...userForm, setupToken: e.target.value })} /></label>}<button className="primary" disabled={busy}>{busy ? <Loader2 className="spin" /> : <KeyRound size={16} />}{needsLogin ? 'Login' : 'Create admin account'}</button></form></div>;
 }
@@ -134,6 +155,31 @@ export function ConfirmModal({ confirm, onCancel, onConfirm }) {
 export function ReloadConfirmModal({ open, busy, onCancel, onConfirm }) {
   if (!open) return null;
   return <div className="modal-backdrop" onMouseDown={onCancel}><div className="edit-modal" onMouseDown={(e) => e.stopPropagation()}><div className="modal-head"><h3>Reload Caddy</h3></div><p>Apply current configuration and reload now?</p><div className="toolbar"><button className="primary" onClick={onConfirm} disabled={busy}>{busy ? 'Reloading...' : 'Reload'}</button><button onClick={onCancel} disabled={busy}>Cancel</button></div></div></div>;
+}
+
+export function TypedConfirmModal({ open, busy, title, message, username, typedValue, onTypedValueChange, confirmLabel = 'Confirm', onCancel, onConfirm }) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onMouseDown={onCancel}>
+      <div className="edit-modal typed-confirm-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>{title}</h3>
+          <button type="button" onClick={onCancel} disabled={busy}>Close</button>
+        </div>
+        <p>{message}</p>
+        <label>
+          Type <b>{username}</b> to confirm
+          <input value={typedValue} onChange={(e) => onTypedValueChange(e.target.value)} autoFocus />
+        </label>
+        <div className="toolbar">
+          <button className="danger" type="button" onClick={onConfirm} disabled={busy || typedValue.trim() !== username}>
+            {busy ? 'Working...' : confirmLabel}
+          </button>
+          <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export const deleteConfirm = (event, title, message, action) => {
@@ -223,7 +269,7 @@ export const readBlockAtLine = (content, line) => {
 
 export const previewProxyBlock = (content, draft) => {
   try {
-    const next = updateSimpleProxy(content, { siteLine: draft.line, host: draft.host, upstream: draft.upstream, imports: selectedImportNames(draft.imports), logging: { mode: draft.logMode, path: draft.logPath }, tags: selectedTagNames(draft.tags), category: draft.category, disabled: Boolean(draft.disabled) });
+    const next = updateSimpleProxy(content, { siteLine: draft.line, host: draft.host, upstream: draft.upstream, imports: selectedImportNames(draft.imports), logging: { mode: draft.logMode, path: draft.logPath }, tags: selectedTagNames(draft.tags), category: draft.category, description: draft.description, disabled: Boolean(draft.disabled) });
     return readBlockAtLine(next, draft.line) || draft.rawBlock || '';
   } catch {
     return draft.rawBlock || '';
@@ -249,9 +295,10 @@ export const StatusDot = ({ check, disabled = false }) => {
 
 export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete, onToggleDisabled }) {
   const addresses = Array.isArray(site.addresses) ? site.addresses : [];
+  const description = String(site.description || '').trim();
   return (
     <div className={`proxy-row ${site.disabled ? 'disabled' : ''}`}>
-      <div className="proxy-row-main">
+      <div className={`proxy-row-main ${canEdit ? 'clickable' : ''}`} onClick={canEdit ? onEdit : undefined} role={canEdit ? 'button' : undefined} tabIndex={canEdit ? 0 : undefined} onKeyDown={canEdit ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onEdit(); } } : undefined}>
         <span className="proxy-host" data-label="Host">
           {addresses.length > 0
             ? addresses.map((address, index) => {
@@ -261,7 +308,7 @@ export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onE
                 <React.Fragment key={key}>
                   {index > 0 ? ', ' : ''}
                   {href ? (
-                    <a className="proxy-host-link" href={href} target="_blank" rel="noreferrer noopener">
+                    <a className="proxy-host-link" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>
                       {address}
                     </a>
                   ) : (
@@ -271,6 +318,7 @@ export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onE
               );
             })
             : 'none'}
+          {description && <small className="proxy-description">{description}</small>}
         </span>
         <span className="proxy-target" data-label="Upstream">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
         <div className="proxy-local" data-label="Local">
@@ -283,9 +331,9 @@ export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onE
         <div className="row-actions">
           {canEdit && (
             <>
-              <button type="button" onClick={onToggleDisabled}>{site.disabled ? 'Enable' : 'Disable'}</button>
-              <button type="button" onClick={onEdit}>Edit</button>
-              <button type="button" className="danger" onClick={onDelete}>Delete</button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onToggleDisabled(); }}>{site.disabled ? 'Enable' : 'Disable'}</button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onEdit(); }}>Edit</button>
+              <button type="button" className="danger" onClick={(e) => { e.stopPropagation(); onDelete(e); }}>Delete</button>
             </>
           )}
         </div>

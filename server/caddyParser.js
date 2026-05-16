@@ -15,6 +15,7 @@ const firstToken = (line) => line.trim().split(/\s+/)[0] || '';
 const normalizeAddress = (line) => line.replace(/\s*\{\s*$/, '').trim();
 const TAG_PREFIX_PATTERN = /^#\s*caddyui-tags\s*:\s*(.*)$/i;
 const CATEGORY_PREFIX_PATTERN = /^#\s*caddyui-category\s*:\s*(.*)$/i;
+const DESCRIPTION_PREFIX_PATTERN = /^#\s*caddyui-description\s*:\s*(.*)$/i;
 const DISABLED_PREFIX_PATTERN = /^#\s*caddyui-disabled\s*:\s*(true|1|yes)\s*$/i;
 const DISABLED_PROXY_PREFIX_PATTERN = /^(\s*)#\s*caddyui-disabled-proxy\s?(.*)$/i;
 
@@ -128,6 +129,24 @@ function parseSiteCategory(lines, start, end) {
     }
   }
   return category;
+}
+
+function parseSiteDescription(lines, start, end) {
+  let description = '';
+  let depth = 0;
+  for (let i = start; i <= end; i++) {
+    const raw = lines[i];
+    const trimmed = String(raw || '').trim();
+    if (depth === 0) {
+      const match = trimmed.match(DESCRIPTION_PREFIX_PATTERN);
+      if (match) description = String(match[1] || '').trim();
+    }
+    for (const char of stripInlineComment(raw)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return description;
 }
 
 function parseSiteDisabled(lines, start, end) {
@@ -318,8 +337,9 @@ export function parseCaddyfile(source = '') {
         const logging = parseSiteLog(lines, bodyStart, bodyEnd);
         const tags = parseSiteTags(lines, bodyStart, bodyEnd);
         const category = parseSiteCategory(lines, bodyStart, bodyEnd);
+        const description = parseSiteDescription(lines, bodyStart, bodyEnd);
         const disabled = parseSiteDisabled(lines, bodyStart, bodyEnd) || (scan.proxies.length > 0 && scan.proxies.every((proxy) => proxy.disabled));
-        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, logging, tags, category, disabled, body });
+        sites.push({ id: `${addresses.join(',')}:${i + 1}`, addresses, line: i + 1, endLine: end + 1, imports, matchers, proxies: scan.proxies, forwardAuth: scan.forwardAuth, handles: scan.handles, directives: scan.directives, logging, tags, category, description, disabled, body });
       }
       i = end;
     } else if (clean.includes('{') && !clean.endsWith('{')) {
@@ -443,6 +463,20 @@ function removeTopLevelCategory(lines) {
   return kept;
 }
 
+function removeTopLevelDescription(lines) {
+  const kept = [];
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = String(line || '').trim();
+    if (!(depth === 0 && DESCRIPTION_PREFIX_PATTERN.test(trimmed))) kept.push(line);
+    for (const char of stripInlineComment(line)) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+    }
+  }
+  return kept;
+}
+
 function removeDisabledMarker(lines) {
   return lines.filter((line) => !DISABLED_PREFIX_PATTERN.test(String(line || '').trim()));
 }
@@ -483,12 +517,14 @@ function replaceFirstTopLevelReverseProxy(lines, upstream, proxyImports = []) {
   return next;
 }
 
-export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {}, disabled = false }) {
+export function appendSimpleProxy(source, { host, upstream, imports = [], logging = {}, description = '', disabled = false }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
+  const safeDescription = String(description || '').trim();
   if (!safeHost || !safeUpstream) throw new Error('Host and upstream are required.');
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
   const importLines = siteImports.map((name) => `\timport ${name}`).join('\n');
+  const descriptionLine = safeDescription ? `\t# caddyui-description: ${safeDescription}` : '';
   const disabledLine = disabled ? '\t# caddyui-disabled: true' : '';
   const logLines = formatLogLines('\t', logging).join('\n');
   const proxyImportLines = proxyImports.map((name) => `\t\timport ${name}`).join('\n');
@@ -496,14 +532,15 @@ export function appendSimpleProxy(source, { host, upstream, imports = [], loggin
     ? `\treverse_proxy ${safeUpstream} {\n${proxyImportLines}\n\t}`
     : `\treverse_proxy ${safeUpstream}`;
   const proxyLine = disabled ? proxyBlock.split('\n').map(maskDisabledProxyLine).join('\n') : proxyBlock;
-  const block = `${safeHost} {\n${disabledLine ? `${disabledLine}\n` : ''}${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
+  const block = `${safeHost} {\n${descriptionLine ? `${descriptionLine}\n` : ''}${disabledLine ? `${disabledLine}\n` : ''}${importLines ? `${importLines}\n` : ''}${logLines ? `${logLines}\n` : ''}${proxyLine}\n}\n`;
   return `${source.trimEnd()}\n\n${block}`;
 }
 
 
-export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging, disabled = false }) {
+export function updateSimpleProxy(source, { siteLine, host, upstream, imports = [], logging, description = '', disabled = false }) {
   const safeHost = String(host || '').trim();
   const safeUpstream = String(upstream || '').trim();
+  const safeDescription = String(description || '').trim();
   const targetLine = Number(siteLine);
   if (!targetLine || !safeHost || !safeUpstream) throw new Error('Site line, host and upstream are required.');
   const lines = source.replace(/\r\n/g, '\n').split('\n');
@@ -512,11 +549,12 @@ export function updateSimpleProxy(source, { siteLine, host, upstream, imports = 
   const end = findMatchingBrace(lines, start);
   const { siteImports, proxyImports } = splitImportsByScope(source, imports);
   const bodyLines = lines.slice(start + 1, end);
-  const cleanedBody = removeTopLevelLog(removeTopLevelImports(removeTopLevelTags(removeTopLevelCategory(removeDisabledMarker(bodyLines)))));
+  const cleanedBody = removeTopLevelLog(removeTopLevelImports(removeTopLevelTags(removeTopLevelCategory(removeTopLevelDescription(removeDisabledMarker(bodyLines))))));
   const rewrittenBody = replaceFirstTopLevelReverseProxy(cleanedBody, safeUpstream, proxyImports);
   const indent = bodyLines.find((line) => line.trim())?.match(/^\s*/)?.[0] || '\t';
   const block = [
     `${safeHost} {`,
+    ...(safeDescription ? [`${indent}# caddyui-description: ${safeDescription}`] : []),
     ...(disabled ? [`${indent}# caddyui-disabled: true`] : []),
     ...siteImports.map((name) => `${indent}import ${name}`),
     ...formatLogLines(indent, logging),

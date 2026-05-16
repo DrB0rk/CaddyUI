@@ -27,6 +27,7 @@ function sortValue(site, key, health) {
   if (key === 'domain') return rootDomain(site.addresses?.[0]);
   if (key === 'host') return site.addresses?.[0] || '';
   if (key === 'upstream') return site.proxies?.[0]?.upstreams?.join(' ') || '';
+  if (key === 'description') return site.description || '';
   if (key === 'local') return Boolean(health?.[site.id]?.local?.online);
   if (key === 'category') return site.category || '';
   if (key === 'tags') return (site.tags || []).join(', ');
@@ -141,7 +142,7 @@ function TagAutoCompleteInput({ value, onChange, suggestions, placeholder = '' }
 }
 
 export default function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading, api, onConfigChanged }) {
-  const empty = { host: '', upstream: '', category: '', tags: '', imports: '', logMode: 'none', logPath: '' };
+  const empty = { host: '', upstream: '', description: '', category: '', tags: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -167,6 +168,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
         site.imports.map((i) => i.name).join(' '),
         (site.proxies[0]?.imports || []).map((i) => i.name).join(' '),
         rootDomain(site.addresses?.[0]),
+        site.description || '',
         (site.tags || []).join(' '),
         site.category || '',
       ]
@@ -252,6 +254,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       const payload = {
         host: form.host,
         upstream: form.upstream,
+        description: form.description,
         category: form.category,
         imports: selectedImportNames(form.imports),
         tags: selectedTagNames(form.tags),
@@ -298,6 +301,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       const payload = {
         host: edit.host,
         upstream: edit.upstream,
+        description: edit.description,
         category: edit.category,
         imports: selectedImportNames(edit.imports),
         tags: selectedTagNames(edit.tags),
@@ -327,6 +331,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       line: site.line,
       host: site.addresses[0] || '',
       upstream: site.proxies[0]?.upstreams?.join(' ') || '',
+      description: site.description || '',
       category: site.category || '',
       tags: (site.tags || []).join(', '),
       imports: [...new Set(names)].join(', '),
@@ -441,6 +446,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
             {domains.flatMap((domain) => [`caddyui.${domain}`, `app.${domain}`, domain]).map((host) => <option key={host} value={host} />)}
           </datalist>
           <input placeholder="http://10.0.0.10:3000" value={form.upstream} onChange={(e) => setForm({ ...form, upstream: e.target.value })} />
+          <input className="proxy-description-input" placeholder="short description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           <AutoCompleteInput
             value={form.category}
             placeholder="category"
@@ -468,61 +474,79 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
 
       {edit && (
         <div className="modal-backdrop" onMouseDown={() => setEdit(null)}>
-          <form className="edit-modal" onSubmit={saveEdit} onMouseDown={(e) => e.stopPropagation()}>
+          <form className="edit-modal proxy-edit-modal" onSubmit={saveEdit} onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h3>Edit proxy</h3>
               <button type="button" onClick={() => setEdit(null)}>Close</button>
             </div>
-            <label>
-              Host
-              <input value={edit.host} onChange={(e) => { const next = { ...edit, host: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
-            </label>
-            <label>
-              Upstream
-              <input value={edit.upstream} onChange={(e) => { const next = { ...edit, upstream: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
-            </label>
-            <label>
-              Category
-              <AutoCompleteInput
-                value={edit.category}
-                suggestions={categories}
-                onChange={(value) => {
-                  const next = { ...edit, category: value };
-                  if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
-                  setEdit(next);
-                }}
-              />
-            </label>
-            <label>
-              Tags
-              <TagAutoCompleteInput
-                value={edit.tags}
-                placeholder="prod, internal"
-                suggestions={allTags}
-                onChange={(value) => {
-                  const next = { ...edit, tags: value };
-                  if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
-                  setEdit(next);
-                }}
-              />
-            </label>
-            <label>
-              Logging
-              <select value={edit.logMode} onChange={(e) => { const next = { ...edit, logMode: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }}>
-                <option value="none">No access log</option>
-                <option value="default">Default log</option>
-                <option value="stdout">Log to stdout</option>
-                <option value="stderr">Log to stderr</option>
-                <option value="file">Log to file</option>
-              </select>
-            </label>
-            {edit.logMode === 'file' && (
-              <label>
-                Log file
-                <input value={edit.logPath} onChange={(e) => { const next = { ...edit, logPath: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
-              </label>
-            )}
-            <MiddlewarePicker snippets={snippets} value={edit.imports} onChange={(imports) => { const next = { ...edit, imports }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
+            <div className="proxy-edit-layout">
+              <section className="proxy-edit-card">
+                <h4>Connection</h4>
+                <label>
+                  Host
+                  <input value={edit.host} onChange={(e) => { const next = { ...edit, host: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
+                </label>
+                <label>
+                  Upstream
+                  <input value={edit.upstream} onChange={(e) => { const next = { ...edit, upstream: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
+                </label>
+                <label>
+                  Description
+                  <textarea rows="3" value={edit.description} onChange={(e) => { const next = { ...edit, description: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} placeholder="What this proxy is for" />
+                </label>
+              </section>
+              <section className="proxy-edit-card">
+                <h4>Organization</h4>
+                <label>
+                  Category
+                  <AutoCompleteInput
+                    value={edit.category}
+                    suggestions={categories}
+                    onChange={(value) => {
+                      const next = { ...edit, category: value };
+                      if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                      setEdit(next);
+                    }}
+                  />
+                </label>
+                <label>
+                  Tags
+                  <TagAutoCompleteInput
+                    value={edit.tags}
+                    placeholder="prod, internal"
+                    suggestions={allTags}
+                    onChange={(value) => {
+                      const next = { ...edit, tags: value };
+                      if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next);
+                      setEdit(next);
+                    }}
+                  />
+                </label>
+                <div className="proxy-edit-card proxy-edit-card-compact">
+                  <h4>Middleware</h4>
+                  <MiddlewarePicker snippets={snippets} value={edit.imports} onChange={(imports) => { const next = { ...edit, imports }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
+                </div>
+              </section>
+              <section className="proxy-edit-card">
+                <h4>Logging</h4>
+                <label>
+                  Logging
+                  <select value={edit.logMode} onChange={(e) => { const next = { ...edit, logMode: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }}>
+                    <option value="none">No access log</option>
+                    <option value="default">Default log</option>
+                    <option value="stdout">Log to stdout</option>
+                    <option value="stderr">Log to stderr</option>
+                    <option value="file">Log to file</option>
+                  </select>
+                </label>
+                {edit.logMode === 'file' && (
+                  <label>
+                    Log file
+                    <input value={edit.logPath} onChange={(e) => { const next = { ...edit, logPath: e.target.value }; if (next.rawOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }} />
+                  </label>
+                )}
+              </section>
+            </div>
             <button type="button" className="expand-toggle" onClick={() => { const nextOpen = !edit.rawOpen; const next = { ...edit, rawOpen: nextOpen }; if (nextOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }}>
               {edit.rawOpen ? 'Hide raw config' : 'Edit raw config'}
             </button>

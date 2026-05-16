@@ -27,3 +27,5 @@ coverage/
 /template/
 .tools/caddy
 .tmp
+new_features.md
+.tools

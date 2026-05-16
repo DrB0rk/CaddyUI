@@ -7,6 +7,8 @@ SCRIPT_CHANNEL="dev"
 INSTALLER_VERSION="2026.05.11-3"
 REPO_URL="https://github.com/DrB0rk/CaddyUI.git"
 BRANCH="${CADDYUI_BRANCH:-$SCRIPT_CHANNEL}"
+CONFIG_MODE="${CADDYUI_CONFIG_MODE:-}"
+CADDY_API_URL="${CADDYUI_CADDY_API_URL:-http://127.0.0.1:2019}"
 START_PORT="${CADDYUI_PORT:-8787}"
 PORT_SCAN_LIMIT="${CADDYUI_PORT_SCAN_LIMIT:-100}"
 RUN_USER="${SUDO_USER:-${USER:-caddyui}}"
@@ -259,6 +261,8 @@ CADDY_UI_PORT=$PORT
 CADDY_UI_DATA_DIR=$DATA_DIR
 CADDY_UI_SECRET=$SECRET
 CADDY_UI_SETUP_TOKEN=$SETUP_TOKEN_VALUE
+CADDY_UI_CONFIG_MODE=$CONFIG_MODE
+CADDY_UI_CADDY_API_URL=$CADDY_API_URL
 ENV
   chmod 600 "$INSTALL_DIR/.env" || true
   if [[ "$IS_ROOT" -eq 1 ]]; then chown "$RUN_USER":"$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true; fi
@@ -342,6 +346,74 @@ read_tty() {
 }
 valid_domain() {
   [[ "$1" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]
+}
+select_config_mode() {
+  local answer=""
+  case "${CONFIG_MODE,,}" in
+    api|file) CONFIG_MODE="${CONFIG_MODE,,}"; return 0 ;;
+  esac
+  if [[ "${CADDYUI_ASSUME_YES:-0}" == "1" ]]; then
+    CONFIG_MODE="api"
+    return 0
+  fi
+  answer="$(read_tty "Install in API mode or file mode? [api/file] (default: api): " || true)"
+  answer="${answer:-api}"
+  answer="${answer,,}"
+  [[ "$answer" == "api" || "$answer" == "file" ]] || fail "Invalid config mode: $answer"
+  CONFIG_MODE="$answer"
+}
+caddy_api_healthy() {
+  curl -fsS "${CADDY_API_URL%/}/config/" >/dev/null 2>&1
+}
+enable_caddy_api_in_file() {
+  local file="$1"
+  local tmp
+  tmp="$(mktemp)"
+  if grep -Eq '^[[:space:]]*\{' "$file"; then
+    awk '
+      BEGIN { inserted = 0 }
+      /^[[:space:]]*\{/ && inserted == 0 {
+        print $0
+        print "\tadmin 127.0.0.1:2019"
+        inserted = 1
+        next
+      }
+      { print $0 }
+    ' "$file" > "$tmp"
+  else
+    {
+      printf "{\n\tadmin 127.0.0.1:2019\n}\n\n"
+      cat "$file"
+    } > "$tmp"
+  fi
+  if caddy validate --config "$tmp" --adapter caddyfile >> "$INSTALL_LOG" 2>&1; then
+    copy_caddyfile "$tmp" "$file"
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+ensure_api_mode_ready() {
+  local file=""
+  if caddy_api_healthy; then
+    ok "Caddy API is reachable at $CADDY_API_URL"
+    return 0
+  fi
+  warn "Caddy API is not reachable at $CADDY_API_URL"
+  confirm "Try to enable the Caddy admin API on this machine?" yes || return 0
+  file="$(find_caddyfiles | head -1 || true)"
+  [[ -n "$file" ]] || fail "Could not find a readable Caddyfile to enable the admin API."
+  step "Enabling Caddy admin API in $file"
+  enable_caddy_api_in_file "$file" || fail "Failed to update Caddyfile for admin API. Check $INSTALL_LOG"
+  if command -v caddy >/dev/null 2>&1; then
+    run_quiet caddy reload --config "$file" --adapter caddyfile || warn "Caddy reload failed. Reload it manually after install."
+  fi
+  if caddy_api_healthy; then
+    ok "Caddy API is now reachable"
+    return 0
+  fi
+  warn "Caddy API is still not reachable. You may need to reload Caddy manually."
 }
 find_caddyfiles() {
   local paths=(
@@ -567,6 +639,10 @@ mkdir -p "$LOG_DIR"
 step "Checking prerequisites"
 check_and_install_prerequisites
 ok "Required tools are available"
+select_config_mode
+if [[ "$CONFIG_MODE" == "api" ]]; then
+  ensure_api_mode_ready
+fi
 if [[ "$BRANCH" == "dev" ]]; then
   warn "Development branch. Not stable."
 fi

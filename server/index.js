@@ -37,6 +37,7 @@ const JWT_SECRET = process.env.CADDY_UI_SECRET || DEFAULT_SECRET;
 const COOKIE_NAME = 'caddyui_token';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SETUP_TOKEN = process.env.CADDY_UI_SETUP_TOKEN || '';
+const DEFAULT_CONFIG_MODE = String(process.env.CADDY_UI_CONFIG_MODE || 'api').trim().toLowerCase() === 'file' ? 'file' : 'api';
 const DEFAULT_CADDY_API_URL = String(process.env.CADDY_UI_CADDY_API_URL || 'http://127.0.0.1:2019').trim();
 const DEFAULT_CADDY_API_TOKEN = String(process.env.CADDY_UI_CADDY_API_TOKEN || '').trim();
 const LOGIN_WINDOW_MS = Number(process.env.CADDY_UI_LOGIN_WINDOW_MS || 15 * 60 * 1000);
@@ -51,12 +52,10 @@ const VALID_ROLES = new Set(['view', 'edit', 'admin']);
 const CONFIG_MODE_VALUES = new Set(['file', 'api']);
 const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,64}$/;
 const MAX_PASSWORD_LENGTH = 72;
-const ENV_ALLOWED_ORIGINS = [
-  (process.env.CADDY_UI_ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((x) => normalizedOrigin(x.trim()))
-    .filter(Boolean)
-];
+const ENV_ALLOWED_ORIGINS = (process.env.CADDY_UI_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((x) => normalizedOrigin(x.trim()))
+  .filter(Boolean);
 const ENV_ALLOW_REMOTE_SETUP = process.env.CADDY_UI_ALLOW_REMOTE_SETUP === '1';
 const ENV_SECURE_COOKIE_MODE =
   process.env.CADDY_UI_INSECURE_COOKIE === '1'
@@ -261,6 +260,24 @@ function pruneLoginAttempts(now = Date.now()) {
   }
 }
 
+function requireRateLimit(namespace, maxAttempts, windowMs = LOGIN_WINDOW_MS) {
+  return (req, res, next) => {
+    const key = `${namespace}:${clientIp(req)}:${req.user?.username || 'anon'}`;
+    const now = Date.now();
+    pruneLoginAttempts(now);
+    const entry = loginAttempts.get(key);
+    if (!entry || now > entry.resetAt) {
+      loginAttempts.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (entry.count >= maxAttempts) {
+      return res.status(429).json({ error: 'Too many requests. Please wait and try again.' });
+    }
+    entry.count += 1;
+    return next();
+  };
+}
+
 function secureEqual(a, b) {
   const left = Buffer.from(String(a || ''), 'utf8');
   const right = Buffer.from(String(b || ''), 'utf8');
@@ -307,11 +324,18 @@ function normalizeTrustProxyHops(value, fallback = 0) {
   return hops > 0 ? hops : 0;
 }
 
-function normalizeConfigMode(value, fallback = 'file') {
+function normalizeConfigMode(value, fallback = DEFAULT_CONFIG_MODE) {
   const normalized = String(value || '')
     .trim()
     .toLowerCase();
   return CONFIG_MODE_VALUES.has(normalized) ? normalized : fallback;
+}
+
+function normalizeProxyDescription(value = '') {
+  return String(value || '')
+    .replace(/\r?\n+/g, ' ')
+    .trim()
+    .slice(0, 280);
 }
 
 function normalizeApiUrl(value, fallback = '') {
@@ -340,7 +364,7 @@ function normalizeSettings(settings) {
       : [];
   return {
     configured: Boolean(base.configured),
-    configMode: normalizeConfigMode(base.configMode, 'file'),
+    configMode: normalizeConfigMode(base.configMode, DEFAULT_CONFIG_MODE),
     caddyfilePath: base.caddyfilePath || '',
     caddyApiUrl: normalizeApiUrl(base.caddyApiUrl, DEFAULT_CADDY_API_URL),
     caddyApiToken: String(base.caddyApiToken ?? DEFAULT_CADDY_API_TOKEN).trim(),
@@ -404,7 +428,7 @@ async function loadSettings() {
   const raw = await store.getJson('settings', null);
   const normalized = raw
     ? normalizeSettings(raw)
-    : normalizeSettings({ configured: false, caddyfilePath: '', logPaths: COMMON_LOGS, users: [] });
+    : normalizeSettings({ configured: false, configMode: DEFAULT_CONFIG_MODE, caddyfilePath: '', caddyApiUrl: DEFAULT_CADDY_API_URL, logPaths: COMMON_LOGS, users: [] });
   applyRuntimeSecurity(normalized);
   return normalized;
 }
@@ -450,7 +474,7 @@ function statusSettings(settings, authenticated, currentUsername = '') {
     username: authenticated ? currentUser?.username || '' : '',
     role: authenticated ? currentUser?.role || '' : '',
   };
-  if (!authenticated) return { ...base, caddyfilePath: '', caddyApiUrl: '', configMode: 'file', logPaths: [] };
+  if (!authenticated) return { ...base, caddyfilePath: '', caddyApiUrl: '', configMode: DEFAULT_CONFIG_MODE, logPaths: [] };
   return {
     ...base,
     configMode: normalized.configMode,
@@ -668,6 +692,32 @@ async function requestCaddyApi(settings, endpoint, options = {}) {
     signal: AbortSignal.timeout(options.timeoutMs || 6000),
   });
   return response;
+}
+
+async function testCaddyApiConnection(settingsLike = {}, overrides = {}) {
+  const settings = normalizeSettings({
+    ...settingsLike,
+    configMode: 'api',
+    caddyApiUrl: overrides.caddyApiUrl === undefined ? settingsLike.caddyApiUrl : overrides.caddyApiUrl,
+    caddyApiToken: overrides.caddyApiToken === undefined ? settingsLike.caddyApiToken : overrides.caddyApiToken,
+  });
+  const response = await requestCaddyApi(settings, '/config/', { method: 'GET', timeoutMs: 6000 });
+  const result = await caddyResponseData(response);
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.ok ? 'Connected to Caddy Admin API.' : result.raw || `Caddy API request failed (${result.status}).`,
+    value: result.data,
+  };
+}
+
+async function loadResetConfigTemplate() {
+  const templatePath = path.join(ROOT, 'Caddyfile.example');
+  try {
+    return await fs.readFile(templatePath, 'utf8');
+  } catch {
+    return 'localhost {\n\trespond "Caddy reset placeholder" 200\n}\n';
+  }
 }
 
 function caddyPathPart(value = '') {
@@ -1015,6 +1065,7 @@ function mergeProxyMeta(parsed, metaMap = {}) {
       ...site,
       tags: normalizeProxyTags(meta?.tags?.length ? meta.tags : site.tags || []),
       category: normalizeProxyCategory(meta?.category || site.category || ''),
+      description: normalizeProxyDescription(meta?.description || site.description || ''),
     };
   });
   return { ...parsed, sites };
@@ -1030,13 +1081,14 @@ async function parseConfigWithMeta(content) {
     if (!key || metaMap[key]) continue;
     const tags = normalizeProxyTags(site.tags || []);
     const category = normalizeProxyCategory(site.category || '');
-    if (!tags.length && !category) continue;
-    migrations.push({ key, tags, category });
+    const description = normalizeProxyDescription(site.description || '');
+    if (!tags.length && !category && !description) continue;
+    migrations.push({ key, tags, category, description });
   }
   if (migrations.length) {
     for (const entry of migrations) {
-      await store.setProxyMeta(entry.key, entry.tags, entry.category);
-      metaMap[entry.key] = { tags: entry.tags, category: entry.category };
+      await store.setProxyMeta(entry.key, entry.tags, entry.category, entry.description);
+      metaMap[entry.key] = { tags: entry.tags, category: entry.category, description: entry.description };
     }
   }
   const merged = mergeProxyMeta(parsed, metaMap);
@@ -1049,23 +1101,24 @@ async function pruneProxyMetaForParsed(parsed) {
   await store.pruneProxyMeta(keys);
 }
 
-async function saveProxyMetaByParts(host, upstream, tags = [], category = '') {
+async function saveProxyMetaByParts(host, upstream, tags = [], category = '', description = '') {
   const store = await stateStore;
   const key = proxyMetaKeyFromParts(host, upstream);
   if (!key) return;
   const normalizedTags = normalizeProxyTags(tags);
   const normalizedCategory = normalizeProxyCategory(category);
-  if (!normalizedTags.length && !normalizedCategory) {
+  const normalizedDescription = normalizeProxyDescription(description);
+  if (!normalizedTags.length && !normalizedCategory && !normalizedDescription) {
     await store.deleteProxyMeta(key);
     return;
   }
-  await store.setProxyMeta(key, normalizedTags, normalizedCategory);
+  await store.setProxyMeta(key, normalizedTags, normalizedCategory, normalizedDescription);
 }
 
-async function saveProxyMetaForSite(site, tags = [], category = '') {
+async function saveProxyMetaForSite(site, tags = [], category = '', description = '') {
   const host = site?.addresses?.[0] || '';
   const upstream = site?.proxies?.[0]?.upstreams?.[0] || '';
-  await saveProxyMetaByParts(host, upstream, tags, category);
+  await saveProxyMetaByParts(host, upstream, tags, category, description);
 }
 
 async function deleteProxyMetaForSite(site) {
@@ -1164,7 +1217,7 @@ app.post('/api/setup/user', requireTrustedOrigin, requireSetupOrigin, async (req
 app.post('/api/setup/config', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
   const settings = await loadSettings();
   const { caddyfilePath, logPaths = [], configMode, caddyApiUrl, caddyApiToken, caddyApiSecret, caddyApiTokenClear, caddyApiSecretClear } = req.body || {};
-  const nextConfigMode = normalizeConfigMode(configMode, settings.configMode || 'file');
+  const nextConfigMode = normalizeConfigMode(configMode, settings.configMode || 'api');
   const requestedCaddyfilePath = String(caddyfilePath || '').trim();
   if (nextConfigMode === 'file' && (!requestedCaddyfilePath || !fssync.existsSync(requestedCaddyfilePath))) {
     return res.status(400).json({ error: 'A readable Caddyfile path is required for file mode.' });
@@ -1598,7 +1651,7 @@ app.post('/api/proxies', requireTrustedOrigin, auth, requirePermission('edit'), 
       return res.status(400).json({ error: 'Generated Caddyfile did not validate.', validation, parsed: await parseConfigWithMeta(next) });
     }
     await applyConfigContent(settings, next);
-    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category);
+    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category, req.body?.description);
     const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
@@ -1623,7 +1676,7 @@ app.put('/api/proxies/:line', requireTrustedOrigin, auth, requirePermission('edi
       const store = await stateStore;
       await store.deleteProxyMeta(previousMetaKey);
     }
-    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category);
+    await saveProxyMetaByParts(req.body?.host, req.body?.upstream, req.body?.tags, req.body?.category, req.body?.description);
     const parsed = await parseConfigWithMeta(next);
     res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next });
   } catch (error) {
@@ -1744,7 +1797,7 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
     secureCookieMode,
     allowedOrigins,
   } = req.body || {};
-  const requestedMode = configMode === undefined ? settings.configMode : normalizeConfigMode(configMode, settings.configMode);
+  const requestedMode = configMode === undefined ? settings.configMode : normalizeConfigMode(configMode, settings.configMode || 'api');
   const requestedCaddyfilePath = String(caddyfilePath || '').trim();
   const requestedCaddyApiUrl = caddyApiUrl === undefined ? settings.caddyApiUrl : normalizeApiUrl(caddyApiUrl, settings.caddyApiUrl);
   const changingCaddyfilePath = requestedCaddyfilePath !== String(settings.caddyfilePath || '');
@@ -1816,7 +1869,68 @@ app.post('/api/settings', requireTrustedOrigin, auth, requirePermission('edit'),
   res.json({ settings: publicSettings(next, req.user.username) });
 });
 
-app.put('/api/settings/update-channel', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
+app.post('/api/settings/test-api', requireTrustedOrigin, auth, requirePermission('edit'), requireRateLimit('test-api', 20, 60 * 1000), async (req, res) => {
+  const settings = await loadSettings();
+  const providedUrl = normalizeApiUrl(req.body?.caddyApiUrl, settings.caddyApiUrl || DEFAULT_CADDY_API_URL);
+  const providedSecret =
+    typeof req.body?.caddyApiSecret === 'string' && req.body.caddyApiSecret.trim()
+      ? req.body.caddyApiSecret.trim()
+      : typeof req.body?.caddyApiToken === 'string' && req.body.caddyApiToken.trim()
+        ? req.body.caddyApiToken.trim()
+        : settings.caddyApiToken;
+  if (!providedUrl) return res.status(400).json({ error: 'Caddy API URL is required.' });
+  try {
+    const result = await testCaddyApiConnection(settings, { caddyApiUrl: providedUrl, caddyApiToken: providedSecret });
+    return res.status(result.ok ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(503).json({ ok: false, message: error.message || 'Caddy API is unavailable.' });
+  }
+});
+
+app.post('/api/settings/reset-caddy-config', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('reset-caddy-config', 4, 15 * 60 * 1000), async (req, res) => {
+  const settings = await loadSettings();
+  const confirmationUsername = String(req.body?.username || '').trim();
+  if (!secureEqual(confirmationUsername, req.user.username)) {
+    return res.status(400).json({ error: 'Confirmation username did not match your account.' });
+  }
+  const template = await loadResetConfigTemplate();
+  const { backup } = await applyConfigContent(settings, template, { backup: true });
+  await saveWorkingConfig(template);
+  const parsed = await parseConfigWithMeta(template);
+  await pruneProxyMetaForParsed(parsed);
+  return res.json({ ok: true, backup, content: template, parsed });
+});
+
+app.post('/api/settings/reset-onboarding', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('reset-onboarding', 3, 15 * 60 * 1000), async (req, res) => {
+  const settings = await loadSettings();
+  const confirmationUsername = String(req.body?.username || '').trim();
+  if (!secureEqual(confirmationUsername, req.user.username)) {
+    return res.status(400).json({ error: 'Confirmation username did not match your account.' });
+  }
+  const next = normalizeSettings({
+    configured: false,
+    configMode: 'api',
+    caddyfilePath: '',
+    caddyApiUrl: settings.caddyApiUrl || DEFAULT_CADDY_API_URL,
+    caddyApiToken: '',
+    logPaths: settings.logPaths || COMMON_LOGS,
+    updateChannel: settings.updateChannel || 'stable',
+    trustProxyHops: settings.trustProxyHops,
+    allowRemoteSetup: settings.allowRemoteSetup,
+    secureCookieMode: settings.secureCookieMode,
+    allowedOrigins: settings.allowedOrigins,
+    users: [],
+  });
+  await saveSettings(next);
+  const store = await stateStore;
+  await store.setJson('working_config', { content: '', updatedAt: new Date().toISOString() });
+  await store.setJson('sessions', { revoked: {} });
+  await store.pruneProxyMeta([]);
+  res.clearCookie(COOKIE_NAME, cookieOptions(req));
+  return res.json({ ok: true, settings: statusSettings(next, false, '') });
+});
+
+app.put('/api/settings/update-channel', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('update-channel', 10, 5 * 60 * 1000), async (req, res) => {
   const settings = await loadSettings();
   const channel = String(req.body?.updateChannel || '').trim().toLowerCase();
   if (!UPDATE_CHANNELS.has(channel)) {
@@ -1835,7 +1949,7 @@ app.get('/api/users', auth, requirePermission('admin'), async (_req, res) => {
   res.json({ users: normalizeSettings(settings).users.map(exposeUser) });
 });
 
-app.post('/api/users', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
+app.post('/api/users', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('create-user', 12, 15 * 60 * 1000), async (req, res) => {
   const settings = await loadSettings();
   const normalized = normalizeSettings(settings);
   const { username, password, role } = req.body || {};
@@ -1858,7 +1972,7 @@ app.post('/api/users', requireTrustedOrigin, auth, requirePermission('admin'), a
   res.json({ users: normalized.users.map(exposeUser) });
 });
 
-app.put('/api/users/:username', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
+app.put('/api/users/:username', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('update-user', 20, 15 * 60 * 1000), async (req, res) => {
   const settings = await loadSettings();
   const normalized = normalizeSettings(settings);
   const user = currentUserRecord(normalized, req.params.username);
@@ -1886,7 +2000,7 @@ app.put('/api/users/:username', requireTrustedOrigin, auth, requirePermission('a
   res.json({ users: normalized.users.map(exposeUser) });
 });
 
-app.delete('/api/users/:username', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
+app.delete('/api/users/:username', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('delete-user', 12, 15 * 60 * 1000), async (req, res) => {
   const settings = await loadSettings();
   const normalized = normalizeSettings(settings);
   if (req.user.username === req.params.username) {
@@ -1902,7 +2016,7 @@ app.delete('/api/users/:username', requireTrustedOrigin, auth, requirePermission
   res.json({ users: normalized.users.map(exposeUser) });
 });
 
-app.post('/api/account/password', requireTrustedOrigin, auth, requirePermission('view'), async (req, res) => {
+app.post('/api/account/password', requireTrustedOrigin, auth, requirePermission('view'), requireRateLimit('change-password', 8, 15 * 60 * 1000), async (req, res) => {
   const settings = await loadSettings();
   const normalized = normalizeSettings(settings);
   const user = currentUserRecord(normalized, req.user.username);
@@ -1929,7 +2043,7 @@ app.post('/api/app/check-updates', requireTrustedOrigin, auth, requirePermission
   res.json(await appUpdateStatus(true, channelOverride));
 });
 
-app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), async (req, res) => {
+app.post('/api/app/update', requireTrustedOrigin, auth, requirePermission('admin'), requireRateLimit('app-update', 4, 30 * 60 * 1000), async (req, res) => {
   const currentBranch = await appBranch();
   const settings = await loadSettings();
   const override = String(req.body?.updateChannel || '').trim().toLowerCase();
