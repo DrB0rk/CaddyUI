@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { parseCaddyfile } from '../server/caddyParser.js';
 import pkg from '../package.json';
@@ -94,9 +94,46 @@ export default function App() {
   const role = settings?.role || '';
   const canEdit = canEditRole(role) || localTest;
   const canAdmin = canAdminRole(role) || localTest;
+  const notificationTimers = useRef(new Map());
+  const notificationRemovalTimers = useRef(new Map());
+
+  useEffect(() => () => {
+    for (const timer of notificationTimers.current.values()) window.clearTimeout(timer);
+    for (const timer of notificationRemovalTimers.current.values()) window.clearTimeout(timer);
+    notificationTimers.current.clear();
+    notificationRemovalTimers.current.clear();
+  }, []);
+
+  const finalizeNotificationDismiss = (id) => {
+    const autoTimer = notificationTimers.current.get(id);
+    if (autoTimer) {
+      window.clearTimeout(autoTimer);
+      notificationTimers.current.delete(id);
+    }
+    const removalTimer = notificationRemovalTimers.current.get(id);
+    if (removalTimer) {
+      window.clearTimeout(removalTimer);
+      notificationRemovalTimers.current.delete(id);
+    }
+    setNotifications((current) => current.filter((notification) => notification.id !== id));
+  };
 
   const dismissNotification = (id) => {
-    setNotifications((current) => current.filter((notification) => notification.id !== id));
+    const autoTimer = notificationTimers.current.get(id);
+    if (autoTimer) {
+      window.clearTimeout(autoTimer);
+      notificationTimers.current.delete(id);
+    }
+    let shouldScheduleRemoval = false;
+    setNotifications((current) => current.map((notification) => {
+      if (notification.id !== id) return notification;
+      if (notification.closing) return notification;
+      shouldScheduleRemoval = true;
+      return { ...notification, closing: true };
+    }));
+    if (!shouldScheduleRemoval || notificationRemovalTimers.current.has(id)) return;
+    const removalTimer = window.setTimeout(() => finalizeNotificationDismiss(id), 220);
+    notificationRemovalTimers.current.set(id, removalTimer);
   };
 
   const openEventLog = (eventId = '') => {
@@ -113,17 +150,28 @@ export default function App() {
       durationMs: notification.durationMs ?? 5200,
       ...notification,
       message: summarizeNotificationMessage(notification.message || ''),
+      closing: false,
       id,
     };
     setNotifications((current) => [entry, ...current].slice(0, 6));
+    const existingRemoval = notificationRemovalTimers.current.get(id);
+    if (existingRemoval) {
+      window.clearTimeout(existingRemoval);
+      notificationRemovalTimers.current.delete(id);
+    }
     if (entry.durationMs > 0) {
-      window.setTimeout(() => dismissNotification(id), entry.durationMs);
+      const timer = window.setTimeout(() => dismissNotification(id), entry.durationMs);
+      notificationTimers.current.set(id, timer);
     }
     return id;
   };
 
   const updateNotification = (id, patch) => {
     setNotifications((current) => current.map((notification) => (notification.id === id ? { ...notification, ...patch, ...(patch?.message ? { message: summarizeNotificationMessage(patch.message) } : {}) } : notification)));
+  };
+
+  const clearNotifications = () => {
+    notifications.forEach((notification) => dismissNotification(notification.id));
   };
 
   const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.', event = null) => {
@@ -152,6 +200,11 @@ export default function App() {
   const refreshHealth = async () => {
     if (localTest) return;
     try { const data = await api('/api/proxies/health'); setHealth(data.health || {}); } catch {}
+  };
+
+  const patchHealth = (patch = {}) => {
+    if (!patch || typeof patch !== 'object') return;
+    setHealth((current) => ({ ...(current || {}), ...patch }));
   };
 
   const refreshConfig = async () => {
@@ -380,7 +433,7 @@ export default function App() {
       appVersion={APP_VERSION}
       notifications={notifications}
       onDismissNotification={dismissNotification}
-      onClearNotifications={() => setNotifications([])}
+      onClearNotifications={clearNotifications}
       onNotificationAction={(notificationId) => {
         const current = notifications.find((notification) => notification.id === notificationId);
         if (current?.actionId === 'format-config') runFormatFixGlobal(notificationId);
@@ -412,6 +465,7 @@ export default function App() {
           loading={configLoading}
           api={api}
           onConfigChanged={notifyConfigChangedNeedsReload}
+          onHealthPatch={patchHealth}
         />
       )}
       {page === 'middlewares' && (

@@ -57,56 +57,62 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
               <button type="button" className="toast-clear-button" onClick={onClearNotifications}>Clear all</button>
             </div>
           )}
-          {notifications.map((notification, index) => {
-            const depth = Math.min(index, 5);
-            const scale = Math.max(1 - depth * 0.045, 0.8);
-            const surfaceMix = `${Math.min(depth * 14, 56)}%`;
-            const textMix = `${Math.min(depth * 16, 62)}%`;
-            const borderMix = `${Math.min(depth * 12, 48)}%`;
-            return (
-              <div
-                key={notification.id}
-                className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')} ${notification.eventId ? 'interactive' : ''}`}
-                style={{
-                  zIndex: Math.max(20 - depth, 1),
-                  transform: `scale(${scale})`,
-                  '--toast-surface-mix': surfaceMix,
-                  '--toast-text-mix': textMix,
-                  '--toast-border-mix': borderMix,
-                }}
-                onClick={notification.eventId ? () => onOpenNotification?.(notification.id) : undefined}
-                role={notification.eventId ? 'button' : undefined}
-                tabIndex={notification.eventId ? 0 : undefined}
-                onKeyDown={notification.eventId ? (e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onOpenNotification?.(notification.id);
-                  }
-                } : undefined}
-              >
-                {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-                <span>{notification.message}</span>
-                {notification.actionLabel && onNotificationAction && (
-                  <button
-                    type="button"
-                    className="top-feedback-action"
-                    onClick={(e) => { e.stopPropagation(); onNotificationAction(notification.id); }}
-                    disabled={Boolean(notification.actionBusy)}
-                  >
-                    {notification.actionBusy ? 'Running...' : notification.actionLabel}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="icon-button top-feedback-close"
-                  onClick={(e) => { e.stopPropagation(); onDismissNotification?.(notification.id); }}
-                  aria-label="Dismiss message"
+          <div className="toast-stack-list">
+            {notifications.map((notification, index) => {
+              const depth = Math.min(index, 5);
+              const scale = Math.max(1 - depth * 0.045, 0.8);
+              const surfaceMix = `${Math.min(depth * 14, 56)}%`;
+              const textMix = `${Math.min(depth * 16, 62)}%`;
+              const borderMix = `${Math.min(depth * 12, 48)}%`;
+              return (
+                <div
+                  key={notification.id}
+                  className="toast-card"
+                  style={{
+                    zIndex: Math.max(20 - depth, 1),
+                    transform: `scale(${scale})`,
+                    '--toast-surface-mix': surfaceMix,
+                    '--toast-text-mix': textMix,
+                    '--toast-border-mix': borderMix,
+                  }}
                 >
-                  ×
-                </button>
-              </div>
-            );
-          })}
+                  <div
+                    className={`top-feedback ${notification.level || (notification.ok ? 'success' : 'error')} ${notification.eventId ? 'interactive' : ''} ${notification.closing ? 'closing' : ''}`}
+                    onClick={notification.eventId ? () => onOpenNotification?.(notification.id) : undefined}
+                    role={notification.eventId ? 'button' : undefined}
+                    tabIndex={notification.eventId ? 0 : undefined}
+                    onKeyDown={notification.eventId ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onOpenNotification?.(notification.id);
+                      }
+                    } : undefined}
+                  >
+                    {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                    <span>{notification.message}</span>
+                    {notification.actionLabel && onNotificationAction && (
+                      <button
+                        type="button"
+                        className="top-feedback-action"
+                        onClick={(e) => { e.stopPropagation(); onNotificationAction(notification.id); }}
+                        disabled={Boolean(notification.actionBusy)}
+                      >
+                        {notification.actionBusy ? 'Running...' : notification.actionLabel}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="icon-button top-feedback-close"
+                      onClick={(e) => { e.stopPropagation(); onDismissNotification?.(notification.id); }}
+                      aria-label="Dismiss message"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -316,14 +322,15 @@ export function MiddlewarePicker({ snippets, value, onChange }) {
 
 export const StatusDot = ({ check, disabled = false }) => {
   if (disabled || check?.disabled) return <span className="status-dot disabled">disabled</span>;
+  if (check?.pending) return <span className="status-dot pending">updating</span>;
   return <span className={`status-dot ${check?.online ? 'online' : 'offline'}`}>{check?.online ? 'online' : 'offline'}</span>;
 };
 
-export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete, onToggleDisabled }) {
+export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, toggleBusy = false, onEdit, onDelete, onToggleDisabled }) {
   const addresses = Array.isArray(site.addresses) ? site.addresses : [];
   const description = String(site.description || '').trim();
   return (
-    <div className={`proxy-row ${site.disabled ? 'disabled' : ''}`}>
+    <div className={`proxy-row ${site.disabled ? 'disabled' : ''} ${toggleBusy ? 'pending' : ''}`}>
       <div className={`proxy-row-main ${canEdit ? 'clickable' : ''}`} onClick={canEdit ? onEdit : undefined} role={canEdit ? 'button' : undefined} tabIndex={canEdit ? 0 : undefined} onKeyDown={canEdit ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onEdit(); } } : undefined}>
         <span className="proxy-host" data-label="Host">
           {addresses.length > 0
@@ -350,14 +357,13 @@ export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onE
         <div className="proxy-local" data-label="Local">
           <StatusDot check={healthCheck} disabled={site.disabled} />
         </div>
-        <span className={`proxy-state ${site.disabled ? 'disabled' : 'enabled'}`} data-label="State">{site.disabled ? 'disabled' : 'enabled'}</span>
         <span className="proxy-category" data-label="Category">{site.category || 'none'}</span>
         <span className="proxy-tags" data-label="Tags">{(site.tags || []).join(', ') || 'none'}</span>
         <span className="proxy-mw" data-label="Imports">{[...site.imports.map((i) => i.name), ...(site.proxies[0]?.imports?.map((i) => i.name) || [])].join(', ') || 'none'}</span>
         <div className="row-actions">
           {canEdit && (
             <>
-              <button type="button" onClick={(e) => { e.stopPropagation(); onToggleDisabled(); }}>{site.disabled ? 'Enable' : 'Disable'}</button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onToggleDisabled(); }} disabled={toggleBusy}>{toggleBusy ? 'Saving...' : site.disabled ? 'Enable' : 'Disable'}</button>
               <button type="button" onClick={(e) => { e.stopPropagation(); onEdit(); }}>Edit</button>
               <button type="button" className="danger" onClick={(e) => { e.stopPropagation(); onDelete(e); }}>Delete</button>
             </>

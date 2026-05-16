@@ -39,6 +39,21 @@ function stringifyDetails(details = {}) {
   }
 }
 
+function eventSearchText(event = {}) {
+  return [
+    event.actorUsername,
+    event.actorRole,
+    event.kind,
+    event.action,
+    event.targetType,
+    event.targetId,
+    event.status,
+    event.message,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
 export default function Logs({ api, initialView = 'system', selectedEventId = '', onSelectView }) {
   const [logs, setLogs] = useState(localTest ? [{ source: 'local-test', content: 'Local test mode' }] : []);
   const [events, setEvents] = useState(localTest ? localEvents : []);
@@ -48,6 +63,7 @@ export default function Logs({ api, initialView = 'system', selectedEventId = ''
   const [mode, setMode] = useState('all');
   const [view, setView] = useState(initialView || 'system');
   const [expandedEventId, setExpandedEventId] = useState(selectedEventId || '');
+  const [eventQuery, setEventQuery] = useState('');
 
   const loadLogs = async () => {
     if (localTest) return;
@@ -81,24 +97,41 @@ export default function Logs({ api, initialView = 'system', selectedEventId = ''
     if (!selectedEventId) return;
     setView('events');
     setExpandedEventId(selectedEventId);
-    const row = document.getElementById(`event-row-${selectedEventId}`);
-    if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [selectedEventId, events.length]);
+  }, [selectedEventId]);
 
   useEffect(() => {
-    loadLogs();
-    loadEvents();
+    if (view === 'system') loadLogs();
+    if (view === 'events') loadEvents();
     if (localTest) return undefined;
     const t = setInterval(() => {
-      loadLogs();
-      loadEvents();
+      if (view === 'system') loadLogs();
+      if (view === 'events') loadEvents();
     }, 10000);
     return () => clearInterval(t);
-  }, [lines, mode]);
+  }, [lines, mode, view]);
+
+  const filteredEvents = useMemo(() => {
+    const query = eventQuery.trim().toLowerCase();
+    if (!query) return events;
+    return events.filter((event) => eventSearchText(event).includes(query));
+  }, [events, eventQuery]);
+
+  useEffect(() => {
+    if (!filteredEvents.length) {
+      if (expandedEventId) setExpandedEventId('');
+      return;
+    }
+    if (!expandedEventId || !filteredEvents.some((event) => event.id === expandedEventId)) {
+      setExpandedEventId(filteredEvents[0].id);
+      return;
+    }
+    const row = document.getElementById(`event-row-${expandedEventId}`);
+    if (row && selectedEventId) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [filteredEvents, expandedEventId, selectedEventId]);
 
   const selectedEvent = useMemo(
-    () => events.find((event) => event.id === expandedEventId) || null,
-    [events, expandedEventId]
+    () => filteredEvents.find((event) => event.id === expandedEventId) || null,
+    [filteredEvents, expandedEventId]
   );
 
   return (
@@ -117,7 +150,7 @@ export default function Logs({ api, initialView = 'system', selectedEventId = ''
             <History size={16} />
             Event log
           </button>
-          <button onClick={() => { loadLogs(); loadEvents(); }}>
+          <button onClick={() => { if (view === 'system') loadLogs(); else loadEvents(); }}>
             {(busy || eventBusy) ? <Loader2 className="spin" /> : <RefreshCw size={16} />}
             Refresh
           </button>
@@ -155,12 +188,28 @@ export default function Logs({ api, initialView = 'system', selectedEventId = ''
             <div className="event-table-head">
               <div>
                 <h3>Recent activity</h3>
-                <p>{events.length} events loaded.</p>
+                <p>{filteredEvents.length} of {events.length} events shown.</p>
+              </div>
+              <div className="event-log-tools">
+                <input
+                  className="event-log-search"
+                  value={eventQuery}
+                  onChange={(e) => setEventQuery(e.target.value)}
+                  placeholder="Search user, action, target, message"
+                />
               </div>
             </div>
             <div className="event-table-wrap">
-              {events.length > 0 ? (
+              {filteredEvents.length > 0 ? (
                 <table className="event-table">
+                  <colgroup>
+                    <col className="event-col-time" />
+                    <col className="event-col-user" />
+                    <col className="event-col-action" />
+                    <col className="event-col-target" />
+                    <col className="event-col-status" />
+                    <col className="event-col-message" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>Time</th>
@@ -172,7 +221,7 @@ export default function Logs({ api, initialView = 'system', selectedEventId = ''
                     </tr>
                   </thead>
                   <tbody>
-                    {events.map((event) => (
+                    {filteredEvents.map((event) => (
                       <tr
                         key={event.id}
                         id={`event-row-${event.id}`}
@@ -214,7 +263,7 @@ export default function Logs({ api, initialView = 'system', selectedEventId = ''
             <div className="event-table-head">
               <div>
                 <h3>Event details</h3>
-                <p>{selectedEvent ? selectedEvent.id : 'Select an event from the table.'}</p>
+                <p className="event-detail-id">{selectedEvent ? selectedEvent.id : 'Select an event from the table.'}</p>
               </div>
             </div>
             {selectedEvent ? (

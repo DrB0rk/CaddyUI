@@ -561,7 +561,7 @@ async function recordEvent(req, {
   };
   const store = await stateStore;
   await store.appendEvent(event);
-  await store.pruneEvents(2000);
+  void store.pruneEvents(2000).catch(() => {});
   return event;
 }
 
@@ -869,53 +869,58 @@ function tcpCheck(host, port, timeout = 1800) {
   });
 }
 
-async function checkProxyHealth(parsed) {
-  async function probeTarget(host = '', port = 0) {
-    const value = String(host || '').trim();
-    if (!value) return { online: false, error: 'missing', host: '', port };
-    const ipVersion = net.isIP(value);
-    if (ipVersion > 0) {
-      if (privateIp(value)) return { online: false, error: 'blocked-private-address', host: value, port };
-      const direct = await tcpCheck(value, port);
-      return { ...direct, host: value, port };
-    }
-    try {
-      const resolved = await dns.lookup(value);
-      const resolvedAddress = String(resolved.address || '');
-      if (!resolvedAddress) return { online: false, error: 'lookup_failed', host: value, port };
-      if (privateIp(resolvedAddress)) {
-        return { online: false, error: 'blocked-private-address', host: value, port };
-      }
-      // Connect to the already-validated IP to avoid a second DNS resolution step.
-      const direct = await tcpCheck(resolvedAddress, port);
-      return { ...direct, host: value, port };
-    } catch (error) {
-      return { online: false, error: error.code || error.message || 'lookup_failed', host: value, port };
-    }
+async function probeHealthTarget(host = '', port = 0, { allowPrivate = false } = {}) {
+  const value = String(host || '').trim();
+  if (!value) return { online: false, error: 'missing', host: '', port };
+  const ipVersion = net.isIP(value);
+  if (ipVersion > 0) {
+    if (!allowPrivate && privateIp(value)) return { online: false, error: 'blocked-private-address', host: value, port };
+    const direct = await tcpCheck(value, port);
+    return { ...direct, host: value, port };
   }
+  try {
+    const resolved = await dns.lookup(value);
+    const resolvedAddress = String(resolved.address || '');
+    if (!resolvedAddress) return { online: false, error: 'lookup_failed', host: value, port };
+    if (!allowPrivate && privateIp(resolvedAddress)) {
+      return { online: false, error: 'blocked-private-address', host: value, port };
+    }
+    const direct = await tcpCheck(resolvedAddress, port);
+    return { ...direct, host: value, port };
+  } catch (error) {
+    return { online: false, error: error.code || error.message || 'lookup_failed', host: value, port };
+  }
+}
 
+async function checkSiteHealth(site) {
+  if (!site) {
+    return {
+      local: { online: false, error: 'missing', host: '', port: 0 },
+      domain: { online: false, error: 'missing', host: '', port: 443 },
+    };
+  }
+  if (site.disabled) {
+    return {
+      local: { online: false, error: 'disabled', disabled: true, host: '', port: 0 },
+      domain: { online: false, error: 'disabled', disabled: true, host: splitHostPort(site.addresses?.[0] || '').host, port: 443 },
+    };
+  }
+  const domain = site.addresses?.[0] || '';
+  const upstream = site.proxies?.[0]?.upstreams?.[0] || '';
+  const target = splitHostPort(upstream);
+  const domainHost = splitHostPort(domain).host;
+  const [local, domainResult] = await Promise.all([
+    probeHealthTarget(target.host, target.port, { allowPrivate: true }),
+    probeHealthTarget(domainHost, 443),
+  ]);
+  return { local, domain: domainResult };
+}
+
+async function checkProxyHealth(parsed) {
   const results = {};
   await Promise.all(
     (parsed.sites || []).map(async (site) => {
-      if (site.disabled) {
-        results[site.id] = {
-          local: { online: false, error: 'disabled', disabled: true, host: '', port: 0 },
-          domain: { online: false, error: 'disabled', disabled: true, host: splitHostPort(site.addresses?.[0] || '').host, port: 443 },
-        };
-        return;
-      }
-      const domain = site.addresses?.[0] || '';
-      const upstream = site.proxies?.[0]?.upstreams?.[0] || '';
-      const target = splitHostPort(upstream);
-      const domainHost = splitHostPort(domain).host;
-      const [local, domainResult] = await Promise.all([
-        probeTarget(target.host, target.port),
-        probeTarget(domainHost, 443),
-      ]);
-      results[site.id] = {
-        local,
-        domain: domainResult,
-      };
+      results[site.id] = await checkSiteHealth(site);
     })
   );
   return results;
@@ -1930,7 +1935,8 @@ app.post('/api/proxies/:line/disabled', requireTrustedOrigin, auth, requirePermi
       message: `${disabled ? 'Disabled' : 'Enabled'} proxy ${String(targetSite?.addresses?.[0] || req.params.line).trim()}.`,
       details: { disabled, host: targetSite?.addresses?.[0] || '' },
     });
-    res.json({ ok: true, validation, parsed, health: await checkProxyHealth(parsed), content: next, event });
+    const health = targetSite ? { [targetSite.id]: await checkSiteHealth(targetSite) } : {};
+    res.json({ ok: true, validation, parsed, health, content: next, event });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

@@ -141,7 +141,21 @@ function TagAutoCompleteInput({ value, onChange, suggestions, placeholder = '' }
   );
 }
 
-export default function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading, api, onConfigChanged }) {
+function disabledHealthForSite(site) {
+  return {
+    local: { online: false, error: 'disabled', disabled: true, host: '', port: 0 },
+    domain: { online: false, error: 'disabled', disabled: true, host: rootDomain(site.addresses?.[0] || ''), port: 443 },
+  };
+}
+
+function pendingHealthForSite(site, currentHealth = {}) {
+  return {
+    local: { ...(currentHealth?.local || {}), online: false, pending: true, error: 'updating' },
+    domain: { ...(currentHealth?.domain || {}), pending: true },
+  };
+}
+
+export default function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading, api, onConfigChanged, onHealthPatch }) {
   const empty = { host: '', upstream: '', description: '', category: '', tags: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
@@ -152,6 +166,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
   const [sort, setSort] = useState({ key: 'host', dir: 'asc' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pendingToggleLine, setPendingToggleLine] = useState('');
   const [renderLimits, setRenderLimits] = useState({});
 
   const sites = config?.parsed?.sites || [];
@@ -378,21 +393,46 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
   };
 
   const toggleDisabled = async (site) => {
-    setBusy(true);
+    const pendingKey = String(site.line);
+    if (pendingToggleLine === pendingKey) return;
+    setPendingToggleLine(pendingKey);
     setError('');
     try {
       const disabled = !site.disabled;
       if (localTest) {
         applyLocal(setProxyDisabled(config.content, { siteLine: site.line, disabled }));
+        onHealthPatch?.({ [site.id]: disabled ? disabledHealthForSite(site) : pendingHealthForSite(site, health?.[site.id]) });
         return;
       }
+      setConfig((current) => {
+        if (!current?.parsed) return current;
+        return {
+          ...current,
+          content: setProxyDisabled(current.content, { siteLine: site.line, disabled }),
+          parsed: {
+            ...current.parsed,
+            sites: (current.parsed.sites || []).map((entry) => (
+              entry.id === site.id
+                ? {
+                  ...entry,
+                  disabled,
+                  proxies: (entry.proxies || []).map((proxy) => ({ ...proxy, disabled })),
+                }
+                : entry
+            )),
+          },
+        };
+      });
+      onHealthPatch?.({ [site.id]: disabled ? disabledHealthForSite(site) : pendingHealthForSite(site, health?.[site.id]) });
       const data = await api(`/api/proxies/${site.line}/disabled`, { method: 'POST', body: JSON.stringify({ disabled }) });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
+      if (data.health) onHealthPatch?.(data.health);
       onConfigChanged?.(disabled ? 'Proxy disabled.' : 'Proxy enabled.', data.event || null);
     } catch (err) {
+      refresh?.();
       setError(err.message);
     } finally {
-      setBusy(false);
+      setPendingToggleLine('');
     }
   };
 
@@ -586,7 +626,6 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 <button type="button" className={`table-sort ${sort.key === 'host' ? 'active' : ''}`} onClick={() => toggleSort('host')}>Host{sortArrow('host')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'upstream' ? 'active' : ''}`} onClick={() => toggleSort('upstream')}>Upstream{sortArrow('upstream')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'local' ? 'active' : ''}`} onClick={() => toggleSort('local')}>Local{sortArrow('local')}</button>
-                <span>State</span>
                 <button type="button" className={`table-sort ${sort.key === 'category' ? 'active' : ''}`} onClick={() => toggleSort('category')}>Category{sortArrow('category')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'tags' ? 'active' : ''}`} onClick={() => toggleSort('tags')}>Tags{sortArrow('tags')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'imports' ? 'active' : ''}`} onClick={() => toggleSort('imports')}>Imports{sortArrow('imports')}</button>
@@ -598,6 +637,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                   site={site}
                   healthCheck={health?.[site.id]?.local}
                   canEdit={canEdit}
+                  toggleBusy={pendingToggleLine === String(site.line)}
                   onToggleDisabled={() => toggleDisabled(site)}
                   onEdit={() => startEdit(site)}
                   onDelete={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}
