@@ -143,6 +143,8 @@ select:focus {
   justify-content: flex-end;
   margin-bottom: 10px;
   padding-right: 4px;
+  position: relative;
+  z-index: 40;
 }
 
 .toast-clear-button {
@@ -163,9 +165,9 @@ select:focus {
   flex-wrap: wrap;
   gap: 10px;
   padding: 10px 12px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--line) calc(100% - var(--toast-border-mix, 0%)), var(--bg) var(--toast-border-mix, 0%));
   border-radius: var(--radius);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) calc(100% - var(--toast-surface-mix, 0%)), var(--bg) var(--toast-surface-mix, 0%));
   box-shadow: 0 10px 28px var(--shadow);
 }
 
@@ -198,6 +200,7 @@ select:focus {
   min-width: 0;
   white-space: normal;
   padding-top: 2px;
+  color: color-mix(in srgb, var(--text) calc(100% - var(--toast-text-mix, 0%)), var(--muted) var(--toast-text-mix, 0%));
 }
 
 .top-feedback-close {
@@ -209,6 +212,7 @@ select:focus {
   line-height: 1;
   margin-left: auto;
   flex: 0 0 auto;
+  border-color: color-mix(in srgb, var(--line) calc(100% - var(--toast-border-mix, 0%)), var(--bg) var(--toast-border-mix, 0%));
 }
 
 .top-feedback-action {
@@ -216,6 +220,9 @@ select:focus {
   margin-left: 26px;
   padding: 6px 10px;
   white-space: nowrap;
+  border-color: color-mix(in srgb, var(--line) calc(100% - var(--toast-border-mix, 0%)), var(--bg) var(--toast-border-mix, 0%));
+  background: color-mix(in srgb, var(--surface-2) calc(100% - var(--toast-surface-mix, 0%)), var(--bg) var(--toast-surface-mix, 0%));
+  color: color-mix(in srgb, var(--text) calc(100% - var(--toast-text-mix, 0%)), var(--muted) var(--toast-text-mix, 0%));
 }
 
 .brand,

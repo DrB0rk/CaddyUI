@@ -60,15 +60,19 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
           {notifications.map((notification, index) => {
             const depth = Math.min(index, 5);
             const scale = Math.max(1 - depth * 0.045, 0.8);
-            const opacity = Math.max(1 - depth * 0.14, 0.34);
+            const surfaceMix = `${Math.min(depth * 14, 56)}%`;
+            const textMix = `${Math.min(depth * 16, 62)}%`;
+            const borderMix = `${Math.min(depth * 12, 48)}%`;
             return (
               <div
                 key={notification.id}
                 className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')}`}
                 style={{
                   zIndex: Math.max(20 - depth, 1),
-                  opacity,
                   transform: `scale(${scale})`,
+                  '--toast-surface-mix': surfaceMix,
+                  '--toast-text-mix': textMix,
+                  '--toast-border-mix': borderMix,
                 }}
               >
                 {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
