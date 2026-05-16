@@ -246,6 +246,24 @@ find_free_port() {
   done
   fail "No free TCP port found from $START_PORT to $max"
 }
+existing_configured_port() {
+  [[ -f "$INSTALL_DIR/.env" ]] || return 0
+  awk -F= '$1=="CADDY_UI_PORT" {print $2}' "$INSTALL_DIR/.env" 2>/dev/null | tail -1
+}
+select_runtime_port() {
+  local existing_port=""
+  if [[ -n "${CADDYUI_PORT:-}" ]]; then
+    START_PORT="$CADDYUI_PORT"
+    PORT="$(find_free_port)"
+    return 0
+  fi
+  existing_port="$(existing_configured_port || true)"
+  if [[ -n "$existing_port" ]]; then
+    PORT="$existing_port"
+    return 0
+  fi
+  PORT="$(find_free_port)"
+}
 primary_ip() {
   local ip=""
   ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
@@ -658,14 +676,9 @@ if [[ -d "$INSTALL_DIR/.git" && "${CADDYUI_FORCE_INSTALL:-0}" != "1" ]]; then
   run_existing_update
 fi
 
-if [[ -f "$INSTALL_DIR/.env" && -z "${CADDYUI_PORT:-}" ]]; then
-  existing_port="$(awk -F= '$1=="CADDY_UI_PORT" {print $2}' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)"
-  if [[ -n "$existing_port" ]]; then START_PORT="$existing_port"; fi
-fi
-
-step "Selecting an available port"
-PORT="$(find_free_port)"
-ok "Selected port $PORT"
+step "Selecting runtime port"
+select_runtime_port
+ok "Using port $PORT"
 
 step "Downloading CaddyUI from GitHub"
 if [[ -d "$INSTALL_DIR/.git" ]]; then

@@ -54,7 +54,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
         <div className="toast-stack" role="status" aria-live="polite">
           {notifications.length > 1 && (
             <div className="toast-stack-actions">
-              <button type="button" onClick={onClearNotifications}>Clear all</button>
+              <button type="button" className="toast-clear-button" onClick={onClearNotifications}>Clear all</button>
             </div>
           )}
           {notifications.map((notification, index) => {
