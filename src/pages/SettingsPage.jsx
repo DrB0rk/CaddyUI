@@ -4,13 +4,17 @@ const localTest = import.meta.env.DEV && import.meta.env.VITE_CADDYUI_LOCAL_TEST
 
 export default function SettingsPage({ settings, setSettings, canEdit, canAdmin, api }) {
   const [form, setForm] = useState({
+    configMode: settings.configMode || 'file',
     caddyfilePath: settings.caddyfilePath || '',
+    caddyApiUrl: settings.caddyApiUrl || 'http://127.0.0.1:2019',
+    caddyApiToken: '',
     logPaths: (settings.logPaths || []).join('\n'),
     trustProxyHops: String(settings.trustProxyHops ?? 0),
     allowRemoteSetup: Boolean(settings.allowRemoteSetup),
     secureCookieMode: settings.secureCookieMode || 'auto',
     allowedOrigins: (settings.allowedOrigins || []).join('\n'),
   });
+  const [clearCaddyApiSecret, setClearCaddyApiSecret] = useState(false);
   const [updateChannel, setUpdateChannel] = useState(settings.updateChannel || 'stable');
   const [msg, setMsg] = useState('');
   const [users, setUsers] = useState([]);
@@ -25,14 +29,18 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
 
   useEffect(() => {
     setForm({
+      configMode: settings.configMode || 'file',
       caddyfilePath: settings.caddyfilePath || '',
+      caddyApiUrl: settings.caddyApiUrl || 'http://127.0.0.1:2019',
+      caddyApiToken: '',
       logPaths: (settings.logPaths || []).join('\n'),
       trustProxyHops: String(settings.trustProxyHops ?? 0),
       allowRemoteSetup: Boolean(settings.allowRemoteSetup),
       secureCookieMode: settings.secureCookieMode || 'auto',
       allowedOrigins: (settings.allowedOrigins || []).join('\n'),
     });
-  }, [settings.caddyfilePath, settings.logPaths, settings.trustProxyHops, settings.allowRemoteSetup, settings.secureCookieMode, settings.allowedOrigins]);
+    setClearCaddyApiSecret(false);
+  }, [settings.configMode, settings.caddyfilePath, settings.caddyApiUrl, settings.logPaths, settings.trustProxyHops, settings.allowRemoteSetup, settings.secureCookieMode, settings.allowedOrigins]);
 
   useEffect(() => {
     setUpdateChannel(settings.updateChannel || 'stable');
@@ -81,7 +89,11 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
     if (localTest) {
       setSettings({
         ...settings,
+        configMode: form.configMode || 'file',
         caddyfilePath: form.caddyfilePath,
+        caddyApiUrl: form.caddyApiUrl,
+        hasCaddyApiToken: clearCaddyApiSecret ? false : form.caddyApiToken.trim() ? true : Boolean(settings.hasCaddyApiToken),
+        hasCaddyApiSecret: clearCaddyApiSecret ? false : form.caddyApiToken.trim() ? true : Boolean(settings.hasCaddyApiSecret || settings.hasCaddyApiToken),
         logPaths: nextLogPaths,
         trustProxyHops: Number.isFinite(nextTrustProxyHops) && nextTrustProxyHops > 0 ? Math.floor(nextTrustProxyHops) : 0,
         allowRemoteSetup: Boolean(form.allowRemoteSetup),
@@ -94,9 +106,13 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
 
     try {
       const payload = {
+        configMode: form.configMode || 'file',
         caddyfilePath: form.caddyfilePath,
+        caddyApiUrl: form.caddyApiUrl,
         logPaths: nextLogPaths,
       };
+      if (canEdit && form.caddyApiToken.trim()) payload.caddyApiSecret = form.caddyApiToken.trim();
+      if (canEdit && clearCaddyApiSecret) payload.caddyApiSecretClear = true;
       if (canAdmin) {
         payload.trustProxyHops = Number.isFinite(nextTrustProxyHops) && nextTrustProxyHops > 0 ? Math.floor(nextTrustProxyHops) : 0;
         payload.allowRemoteSetup = Boolean(form.allowRemoteSetup);
@@ -199,8 +215,20 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
           <b>{settings.updateChannel || 'stable'}</b>
         </div>
         <div>
+          <span>Config mode</span>
+          <b>{settings.configMode || 'file'}</b>
+        </div>
+        <div>
           <span>Caddyfile</span>
           <b>{settings.caddyfilePath || 'not set'}</b>
+        </div>
+        <div>
+          <span>Caddy API URL</span>
+          <b>{settings.caddyApiUrl || 'not set'}</b>
+        </div>
+        <div>
+          <span>API secret</span>
+          <b>{(settings.hasCaddyApiSecret || settings.hasCaddyApiToken) ? 'configured' : 'not set'}</b>
         </div>
         <div>
           <span>Log paths</span>
@@ -219,14 +247,61 @@ export default function SettingsPage({ settings, setSettings, canEdit, canAdmin,
       <form className="settings-form" onSubmit={save}>
         <div className="settings-section-head">
           <h3>Caddy configuration</h3>
-          <p>Set the Caddyfile path and log locations used by CaddyUI.</p>
+          <p>Choose file mode or Caddy API mode, then set config and log sources.</p>
         </div>
+        <label>
+          Config mode
+          <select
+            value={form.configMode}
+            onChange={(e) => setForm({ ...form, configMode: e.target.value })}
+            disabled={!canEdit}
+          >
+            <option value="file">file</option>
+            <option value="api">api</option>
+          </select>
+        </label>
+        <label>
+          Caddy API URL
+          <input
+            value={form.caddyApiUrl}
+            onChange={(e) => setForm({ ...form, caddyApiUrl: e.target.value })}
+            readOnly={!canEdit}
+            placeholder="http://127.0.0.1:2019"
+          />
+        </label>
+        <label>
+          Caddy API secret
+          <input
+            type="password"
+            value={form.caddyApiToken}
+            onChange={(e) => {
+              setClearCaddyApiSecret(false);
+              setForm({ ...form, caddyApiToken: e.target.value });
+            }}
+            readOnly={!canEdit}
+            placeholder={(settings.hasCaddyApiSecret || settings.hasCaddyApiToken) ? 'Stored secret is set. Enter a new value to rotate it.' : 'Optional bearer secret'}
+          />
+        </label>
+        {(settings.hasCaddyApiSecret || settings.hasCaddyApiToken) && (
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={clearCaddyApiSecret}
+              onChange={(e) => {
+                setClearCaddyApiSecret(e.target.checked);
+                if (e.target.checked) setForm({ ...form, caddyApiToken: '' });
+              }}
+              disabled={!canEdit}
+            />
+            Clear stored Caddy API secret on save
+          </label>
+        )}
         <label>
           Caddyfile path
           <input
             value={form.caddyfilePath}
             onChange={(e) => setForm({ ...form, caddyfilePath: e.target.value })}
-            readOnly={!canEdit}
+            readOnly={!canEdit || form.configMode === 'api'}
           />
         </label>
         <div className="toolbar">

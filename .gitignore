@@ -25,3 +25,5 @@ coverage/
 /AGENTS.md
 /screenshot
 /template/
+.tools/caddy
+.tmp
