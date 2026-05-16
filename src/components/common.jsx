@@ -57,30 +57,43 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
               <button type="button" onClick={onClearNotifications}>Clear all</button>
             </div>
           )}
-          {notifications.map((notification) => (
-            <div key={notification.id} className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')}`}>
-              {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-              <span>{notification.message}</span>
-              {notification.actionLabel && onNotificationAction && (
+          {notifications.map((notification, index) => {
+            const depth = Math.min(index, 5);
+            const scale = Math.max(1 - depth * 0.045, 0.8);
+            const opacity = Math.max(1 - depth * 0.14, 0.34);
+            return (
+              <div
+                key={notification.id}
+                className={`top-feedback toast-card ${notification.level || (notification.ok ? 'success' : 'error')}`}
+                style={{
+                  zIndex: Math.max(20 - depth, 1),
+                  opacity,
+                  transform: `scale(${scale})`,
+                }}
+              >
+                {notification.level === 'warning' ? <AlertTriangle size={16} /> : notification.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                <span>{notification.message}</span>
+                {notification.actionLabel && onNotificationAction && (
+                  <button
+                    type="button"
+                    className="top-feedback-action"
+                    onClick={() => onNotificationAction(notification.id)}
+                    disabled={Boolean(notification.actionBusy)}
+                  >
+                    {notification.actionBusy ? 'Running...' : notification.actionLabel}
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="top-feedback-action"
-                  onClick={() => onNotificationAction(notification.id)}
-                  disabled={Boolean(notification.actionBusy)}
+                  className="icon-button top-feedback-close"
+                  onClick={() => onDismissNotification?.(notification.id)}
+                  aria-label="Dismiss message"
                 >
-                  {notification.actionBusy ? 'Running...' : notification.actionLabel}
+                  ×
                 </button>
-              )}
-              <button
-                type="button"
-                className="icon-button top-feedback-close"
-                onClick={() => onDismissNotification?.(notification.id)}
-                aria-label="Dismiss message"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>

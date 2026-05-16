@@ -134,6 +134,7 @@ select:focus {
   width: min(420px, calc(100vw - 20px));
   display: grid;
   justify-items: end;
+  align-content: start;
 }
 
 .toast-stack-actions {
@@ -155,8 +156,11 @@ select:focus {
 }
 
 .toast-card {
+  position: relative;
   width: 100%;
-  margin-top: -10px;
+  margin-top: -18px;
+  transform-origin: top right;
+  transition: transform 0.18s ease, opacity 0.18s ease;
 }
 
 .toast-card:first-of-type {
