@@ -18,6 +18,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
   const activeVersion = appInfo?.version || appInfo?.localVersion || appVersion;
   const targetVersion = appInfo?.availableVersion || appInfo?.remoteVersion || '';
   const shownVersion = updating && targetVersion ? targetVersion : activeVersion;
+  const visibleNotificationCount = notifications.filter((notification) => !notification.closing).length;
   const openFeedback = () => {
     window.location.href = 'https://github.com/DrB0rk/CaddyUI/issues/new/choose';
   };
@@ -52,7 +53,7 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
       </header>
       {notifications.length > 0 && (
         <div className="toast-stack" role="status" aria-live="polite">
-          {notifications.length > 1 && (
+          {visibleNotificationCount > 1 && (
             <div className="toast-stack-actions">
               <button type="button" className="toast-clear-button" onClick={onClearNotifications}>Clear all</button>
             </div>

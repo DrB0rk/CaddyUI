@@ -174,8 +174,17 @@ export default function App() {
     notifications.forEach((notification) => dismissNotification(notification.id));
   };
 
-  const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.', event = null) => {
+  const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.', event = null, options = {}) => {
     if (localTest) return;
+    if (options?.skipReloadWarning) {
+      pushNotification({
+        ok: true,
+        level: options.level || 'success',
+        message: prefix,
+        eventId: event?.id || '',
+      });
+      return;
+    }
     if ((settings?.configMode || 'api') === 'api') {
       pushNotification({
         ok: true,

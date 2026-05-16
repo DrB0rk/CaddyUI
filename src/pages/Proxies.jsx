@@ -7,6 +7,7 @@ import {
   MiddlewarePicker,
   Notice,
   ProxyRow,
+  StatusDot,
   StatCards,
   deleteConfirm,
   normalizeLogging,
@@ -155,6 +156,43 @@ function pendingHealthForSite(site, currentHealth = {}) {
   };
 }
 
+function siteImportNames(site) {
+  return [...new Set([...(site.imports || []).map((item) => item.name), ...((site.proxies?.[0]?.imports || []).map((item) => item.name))])];
+}
+
+function nonEditableDirectiveNames(site) {
+  return (site.directives || [])
+    .map((directive) => directive.name)
+    .filter((name) => !['import', 'log'].includes(name));
+}
+
+function isStandardProxySite(site) {
+  if (!site) return false;
+  if ((site.addresses || []).length !== 1) return false;
+  if ((site.proxies || []).length !== 1) return false;
+  if ((site.handles || []).length > 0) return false;
+  if ((site.matchers || []).length > 0) return false;
+  if ((site.forwardAuth || []).length > 0) return false;
+  if (nonEditableDirectiveNames(site).length > 0) return false;
+  const proxy = site.proxies?.[0];
+  if (!proxy) return false;
+  if (proxy.context === 'handle' || proxy.matcher) return false;
+  return true;
+}
+
+function advancedSiteReason(site) {
+  if ((site.handles || []).length > 0) return 'Contains handle blocks and multiple routing branches.';
+  if ((site.matchers || []).length > 0) return 'Contains named matchers outside the simple proxy layout.';
+  if ((site.forwardAuth || []).length > 0) return 'Contains forward_auth directives that need raw editing.';
+  if ((site.proxies || []).length !== 1) return 'Contains multiple reverse_proxy directives.';
+  if ((site.addresses || []).length !== 1) return 'Contains multiple site addresses.';
+  const directives = nonEditableDirectiveNames(site);
+  if (directives.length > 0) return `Contains extra directives: ${directives.slice(0, 3).join(', ')}.`;
+  const proxy = site.proxies?.[0];
+  if (proxy?.context === 'handle' || proxy?.matcher) return 'Contains matcher-specific proxy routing.';
+  return 'This proxy needs raw config editing.';
+}
+
 export default function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading, api, onConfigChanged, onHealthPatch }) {
   const empty = { host: '', upstream: '', description: '', category: '', tags: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
@@ -163,6 +201,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
   const [collapsedSections, setCollapsedSections] = useState({});
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState('domain');
+  const [entryMode, setEntryMode] = useState('standard');
   const [sort, setSort] = useState({ key: 'host', dir: 'asc' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -173,11 +212,15 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
   const snippets = config?.parsed?.snippets || [];
   const deferredSearch = useDeferredValue(search);
   const query = deferredSearch.trim().toLowerCase();
+  const standardCount = useMemo(() => sites.filter((site) => isStandardProxySite(site)).length, [sites]);
+  const advancedCount = sites.length - standardCount;
 
   const filteredSites = useMemo(() => {
-    if (!query) return sites;
-    return sites.filter((site) =>
-      [
+    return sites.filter((site) => {
+      const matchesMode = entryMode === 'advanced' ? !isStandardProxySite(site) : isStandardProxySite(site);
+      if (!matchesMode) return false;
+      if (!query) return true;
+      return [
         site.addresses.join(' '),
         site.proxies.map((proxy) => proxy.upstreams.join(' ')).join(' '),
         site.imports.map((i) => i.name).join(' '),
@@ -186,12 +229,13 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
         site.description || '',
         (site.tags || []).join(' '),
         site.category || '',
+        advancedSiteReason(site),
       ]
         .join(' ')
         .toLowerCase()
-        .includes(query)
-    );
-  }, [query, sites]);
+        .includes(query);
+    });
+  }, [entryMode, query, sites]);
 
   const groupedEntries = useMemo(() => {
     const sorted = [...filteredSites].sort((a, b) => sortSites(a, b, sort, health));
@@ -259,6 +303,19 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       parsed: parseCaddyfile(content),
       health: config?.health || {},
     });
+  };
+
+  const metadataOnlyEdit = (draft) => {
+    if (!draft?.baseline) return false;
+    const baseline = draft.baseline;
+    return (
+      String(draft.host || '').trim() === baseline.host &&
+      String(draft.upstream || '').trim() === baseline.upstream &&
+      selectedImportNames(draft.imports).join(',') === baseline.imports &&
+      String(draft.logMode || 'none') === baseline.logMode &&
+      String(draft.logPath || '').trim() === baseline.logPath &&
+      Boolean(draft.disabled) === baseline.disabled
+    );
   };
 
   const add = async (e) => {
@@ -330,7 +387,8 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       }
       const data = await api(`/api/proxies/${edit.line}`, { method: 'PUT', body: JSON.stringify(payload) });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
-      onConfigChanged?.('Proxy updated.', data.event || null);
+      const metadataOnly = metadataOnlyEdit(edit);
+      onConfigChanged?.(metadataOnly ? 'Proxy metadata saved.' : 'Proxy updated.', data.event || null, metadataOnly ? { skipReloadWarning: true } : undefined);
       setEdit(null);
     } catch (err) {
       setError(err.message);
@@ -340,6 +398,18 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
   };
 
   const startEdit = (site) => {
+    if (!isStandardProxySite(site)) {
+      setEdit({
+        line: site.line,
+        advanced: true,
+        rawOpen: true,
+        rawBlock: readBlockAtLine(config.content, site.line),
+        host: site.addresses[0] || '',
+        reason: advancedSiteReason(site),
+        imports: siteImportNames(site).join(', '),
+      });
+      return;
+    }
     const names = [...site.imports, ...(site.proxies[0]?.imports || [])].map((item) => item.name);
     const logging = normalizeLogging(site.logging);
     setEdit({
@@ -355,6 +425,14 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       disabled: Boolean(site.disabled),
       rawOpen: false,
       rawBlock: readBlockAtLine(config.content, site.line),
+      baseline: {
+        host: site.addresses[0] || '',
+        upstream: site.proxies[0]?.upstreams?.join(' ') || '',
+        imports: [...new Set(names)].join(','),
+        logMode: logging.mode,
+        logPath: logging.path || '',
+        disabled: Boolean(site.disabled),
+      },
     });
   };
 
@@ -458,6 +536,13 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
               <option value="category">Sections by category</option>
             </select>
           </label>
+          <label>
+            Mode
+            <select value={entryMode} onChange={(e) => setEntryMode(e.target.value)}>
+              <option value="standard">Standard entries</option>
+              <option value="advanced">Advanced entries</option>
+            </select>
+          </label>
           <button onClick={refresh}><RefreshCw size={16} /> Refresh</button>
         </div>
       </div>
@@ -466,15 +551,17 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
 
       {loading && (
         <div className="proxy-loading">
-          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /><span /></div>
-          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /><span /></div>
-          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /><span /></div>
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /></div>
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /></div>
+          <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /></div>
         </div>
       )}
 
       <div className="proxy-search">
         <input placeholder="Search proxies" value={search} onChange={(e) => setSearch(e.target.value)} />
         <span>{filteredSites.length} shown</span>
+        <span>{standardCount} standard</span>
+        <span>{advancedCount} advanced</span>
       </div>
 
       {error && <Notice type="error">{error}</Notice>}
@@ -516,9 +603,23 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
         <div className="modal-backdrop" onMouseDown={() => setEdit(null)}>
           <form className="edit-modal proxy-edit-modal" onSubmit={saveEdit} onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>Edit proxy</h3>
+              <h3>{edit.advanced ? 'Advanced proxy editor' : 'Edit proxy'}</h3>
               <button type="button" onClick={() => setEdit(null)}>Close</button>
             </div>
+            {edit.advanced ? (
+              <>
+                <div className="proxy-advanced-meta">
+                  <div className="proxy-edit-card">
+                    <h4>Why advanced mode</h4>
+                    <p>{edit.reason}</p>
+                    <div className="proxy-advanced-details">
+                      <span><b>Host</b>{edit.host || 'n/a'}</span>
+                      <span><b>Imports</b>{edit.imports || 'none'}</span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
             <div className="proxy-edit-layout">
               <section className="proxy-edit-card">
                 <h4>Connection</h4>
@@ -587,10 +688,17 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 )}
               </section>
             </div>
+            )}
+            {!edit.advanced && (
             <button type="button" className="expand-toggle" onClick={() => { const nextOpen = !edit.rawOpen; const next = { ...edit, rawOpen: nextOpen }; if (nextOpen) next.rawBlock = previewProxyBlock(config.content, next); setEdit(next); }}>
               {edit.rawOpen ? 'Hide raw config' : 'Edit raw config'}
             </button>
-            {edit.rawOpen && (
+            )}
+            {edit.advanced ? (
+              <div className="raw-proxy-editor">
+                <Editor height="420px" defaultLanguage="caddyfile" theme={theme === 'light' ? 'light' : 'vs-dark'} value={edit.rawBlock} onChange={(value) => setEdit({ ...edit, rawBlock: value || '' })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on', scrollBeyondLastLine: false }} />
+              </div>
+            ) : edit.rawOpen && (
               <div className="raw-proxy-editor">
                 <Editor height="360px" defaultLanguage="caddyfile" theme={theme === 'light' ? 'light' : 'vs-dark'} value={edit.rawBlock} onChange={(value) => setEdit({ ...edit, rawBlock: value || '' })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on', scrollBeyondLastLine: false }} />
               </div>
@@ -622,6 +730,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 <h3>{groupName}</h3>
                 <span>{items.length} entries</span>
               </summary>
+              {entryMode === 'standard' && (
               <div className="proxy-table-head">
                 <button type="button" className={`table-sort ${sort.key === 'host' ? 'active' : ''}`} onClick={() => toggleSort('host')}>Host{sortArrow('host')}</button>
                 <button type="button" className={`table-sort ${sort.key === 'upstream' ? 'active' : ''}`} onClick={() => toggleSort('upstream')}>Upstream{sortArrow('upstream')}</button>
@@ -631,7 +740,33 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                 <button type="button" className={`table-sort ${sort.key === 'imports' ? 'active' : ''}`} onClick={() => toggleSort('imports')}>Imports{sortArrow('imports')}</button>
                 <span>Actions</span>
               </div>
+              )}
               {items.slice(0, renderLimits[groupName] || 0).map((site) => (
+                entryMode === 'advanced' ? (
+                <article className="proxy-advanced-card" key={site.id}>
+                  <div className="proxy-advanced-head">
+                    <div>
+                      <h4>{site.addresses[0] || 'Unnamed site'}</h4>
+                      <p>{advancedSiteReason(site)}</p>
+                    </div>
+                    <span className="proxy-advanced-badge">Advanced</span>
+                  </div>
+                  <div className="proxy-advanced-grid">
+                    <span><b>Local</b><StatusDot check={health?.[site.id]?.local} disabled={site.disabled} /></span>
+                    <span><b>Disabled</b>{site.disabled ? 'yes' : 'no'}</span>
+                  </div>
+                  <div className="proxy-advanced-summary">
+                    <span><b>Upstreams</b>{site.proxies.map((proxy) => proxy.upstreams.join(' ')).filter(Boolean).join(' | ') || 'none'}</span>
+                    <span><b>Imports</b>{siteImportNames(site).join(', ') || 'none'}</span>
+                  </div>
+                  <pre>{readBlockAtLine(config.content, site.line)}</pre>
+                  <div className="row-actions">
+                    <button type="button" onClick={() => startEdit(site)}>Edit raw</button>
+                    {canEdit && <button type="button" onClick={() => toggleDisabled(site)} disabled={pendingToggleLine === String(site.line)}>{pendingToggleLine === String(site.line) ? 'Saving...' : site.disabled ? 'Enable' : 'Disable'}</button>}
+                    {canEdit && <button type="button" className="danger" onClick={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}>Delete</button>}
+                  </div>
+                </article>
+                ) : (
                 <ProxyRow
                   key={site.id}
                   site={site}
@@ -642,8 +777,9 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
                   onEdit={() => startEdit(site)}
                   onDelete={(e) => setConfirmDelete(deleteConfirm(e, 'Delete proxy', site.addresses[0], () => deleteProxy(site)))}
                 />
+                )
               ))}
-              {(renderLimits[groupName] || 0) < items.length && <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /><span /></div>}
+              {(renderLimits[groupName] || 0) < items.length && <div className="proxy-row-skeleton"><span /><span /><span /><span /><span /><span /><span /></div>}
             </details>
           );
         })}
