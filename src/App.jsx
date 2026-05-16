@@ -38,6 +38,27 @@ const api = async (path, options = {}) => {
 const canEditRole = (role) => role === 'edit' || role === 'admin';
 const canAdminRole = (role) => role === 'admin';
 
+function parseValidationWarning(result = {}) {
+  const raw = String(result?.stderr || '').trim();
+  if (!raw) return { message: 'Validation failed.', canFormat: false };
+  let message = raw;
+  let canFormat = /not formatted/i.test(raw) && /caddy fmt/i.test(raw);
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.warnings) && parsed.warnings.length) {
+      message = parsed.warnings
+        .map((warning) => {
+          const file = warning?.file ? String(warning.file) : 'Caddyfile';
+          const line = warning?.line ? `:${warning.line}` : '';
+          return `${file}${line} ${String(warning?.message || 'Validation warning.')}`;
+        })
+        .join(' | ');
+      canFormat = canFormat || parsed.warnings.some((warning) => /not formatted/i.test(String(warning?.message || '')));
+    }
+  } catch {}
+  return { message, canFormat };
+}
+
 export default function App() {
   const [status, setStatus] = useState(localTest ? { settings: localSettings, authenticated: true, discovered: { caddyfiles: [], logfiles: [] } } : null);
   const [settings, setSettings] = useState(localTest ? localSettings : null);
@@ -55,10 +76,24 @@ export default function App() {
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
   const [actionResult, setActionResult] = useState(null);
   const [configLoading, setConfigLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
 
   const role = settings?.role || '';
   const canEdit = canEditRole(role) || localTest;
   const canAdmin = canAdminRole(role) || localTest;
+
+  const notifyConfigChangedNeedsReload = (prefix = 'Changes saved.') => {
+    if (localTest) return;
+    if ((settings?.configMode || 'file') === 'api') return;
+    setActionResult({
+      ok: false,
+      level: 'warning',
+      message: `${prefix} Caddy has not been reloaded, so changes are not live yet.`,
+      actionId: 'reload-caddy',
+      actionLabel: 'Reload Caddy',
+      actionBusy: false,
+    });
+  };
 
   const refreshHealth = async () => {
     if (localTest) return;
@@ -98,9 +133,60 @@ export default function App() {
     if (!canEdit) return;
     if (localTest) { setActionResult({ ok: true, message: 'Local test mode' }); return; }
     setCaddyBusy(true); setError('');
-    try { const result = await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) }); setActionResult({ ok: result.ok, message: result.ok ? (result.stdout || 'Validation passed') : (result.stderr || 'Validation failed') }); }
+    try {
+      const result = await api('/api/config/validate', { method: 'POST', body: JSON.stringify({ content: config?.content || '' }) });
+      if (result.ok) {
+        setActionResult({ ok: true, level: 'success', message: result.stdout || 'Validation passed.' });
+      } else {
+        const parsedWarning = parseValidationWarning(result);
+        setActionResult({
+          ok: false,
+          level: parsedWarning.canFormat ? 'warning' : 'error',
+          message: parsedWarning.message || 'Validation failed.',
+          actionId: parsedWarning.canFormat ? 'format-config' : '',
+          actionLabel: parsedWarning.canFormat ? 'Run caddy fmt --overwrite' : '',
+          actionBusy: false,
+        });
+      }
+    }
     catch (e) { setActionResult({ ok: false, message: e.message }); }
     finally { setCaddyBusy(false); }
+  };
+
+  const runFormatFixGlobal = async () => {
+    if (!canEdit || actionBusy) return;
+    if (localTest) {
+      setActionResult({ ok: false, level: 'error', message: 'Formatting fix is not available in local test mode.' });
+      return;
+    }
+    setActionBusy(true);
+    setActionResult((current) => (current ? { ...current, actionBusy: true } : current));
+    setError('');
+    try {
+      const formatResult = await api('/api/config/format', {
+        method: 'POST',
+        body: JSON.stringify({ content: config?.content || '' }),
+      });
+      if (!formatResult.changed) {
+        setActionResult({ ok: true, level: 'success', message: 'Config is already formatted.' });
+        return;
+      }
+      const nextContent = String(formatResult.content || '');
+      const saved = await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({ content: nextContent, validate: true }),
+      });
+      setConfig((current) => ({ ...current, content: nextContent, parsed: saved.parsed, health: saved.health || current.health }));
+      if ((settings?.configMode || 'file') === 'api') {
+        setActionResult({ ok: true, level: 'success', message: 'Formatted and saved config.' });
+      } else {
+        notifyConfigChangedNeedsReload('Formatted and saved config.');
+      }
+    } catch (e) {
+      setActionResult({ ok: false, level: 'error', message: e.message || 'Formatting fix failed.' });
+    } finally {
+      setActionBusy(false);
+    }
   };
 
   const reloadCaddyGlobal = async () => {
@@ -240,6 +326,10 @@ export default function App() {
       appVersion={APP_VERSION}
       actionResult={actionResult}
       onDismissActionResult={() => setActionResult(null)}
+      onActionResultAction={() => {
+        if (actionResult?.actionId === 'format-config') runFormatFixGlobal();
+        if (actionResult?.actionId === 'reload-caddy') setReloadConfirmOpen(true);
+      }}
     >
       {error && <Notice type="error">{error}</Notice>}
       {updating && (
@@ -261,10 +351,18 @@ export default function App() {
           health={health}
           loading={configLoading}
           api={api}
+          onConfigChanged={notifyConfigChangedNeedsReload}
         />
       )}
       {page === 'middlewares' && (
-        <Middlewares config={config} setConfig={setConfig} canEdit={canEdit} theme={theme} api={api} />
+        <Middlewares
+          config={config}
+          setConfig={setConfig}
+          canEdit={canEdit}
+          theme={theme}
+          api={api}
+          onConfigChanged={notifyConfigChangedNeedsReload}
+        />
       )}
       {page === 'configuration' && (
         <Configuration
@@ -274,6 +372,7 @@ export default function App() {
           canEdit={canEdit}
           theme={theme}
           api={api}
+          onConfigChanged={notifyConfigChangedNeedsReload}
         />
       )}
       {page === 'logs' && <Logs api={api} />}

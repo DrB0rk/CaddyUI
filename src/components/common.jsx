@@ -14,7 +14,7 @@ export function Notice({ type = 'info', children }) {
   return <div className={`notice ${type}`}>{type === 'error' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}<span>{children}</span></div>;
 }
 
-export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, actionResult, onDismissActionResult }) {
+export function Shell({ children, page, setPage, collapsed, setCollapsed, user, onLogout, theme, setTheme, appInfo, onCheckUpdates, onRunUpdate, canUpdate, checkingUpdates, updating, canEdit, onValidateCaddy, onConfirmReloadCaddy, caddyBusy, appVersion, actionResult, onDismissActionResult, onActionResultAction }) {
   const activeVersion = appInfo?.version || appInfo?.localVersion || appVersion;
   const targetVersion = appInfo?.availableVersion || appInfo?.remoteVersion || '';
   const shownVersion = updating && targetVersion ? targetVersion : activeVersion;
@@ -51,9 +51,14 @@ export function Shell({ children, page, setPage, collapsed, setCollapsed, user, 
         </div>
       </header>
       {actionResult && (
-        <div className={`top-feedback ${actionResult.ok ? 'success' : 'error'}`} role="status" aria-live="polite">
-          {actionResult.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+        <div className={`top-feedback ${actionResult.level || (actionResult.ok ? 'success' : 'error')}`} role="status" aria-live="polite">
+          {actionResult.level === 'warning' ? <AlertTriangle size={16} /> : actionResult.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
           <span>{actionResult.message}</span>
+          {actionResult.actionLabel && onActionResultAction && (
+            <button type="button" className="top-feedback-action" onClick={onActionResultAction} disabled={Boolean(actionResult.actionBusy)}>
+              {actionResult.actionBusy ? 'Running...' : actionResult.actionLabel}
+            </button>
+          )}
           <button type="button" className="icon-button top-feedback-close" onClick={onDismissActionResult} aria-label="Dismiss message">×</button>
         </div>
       )}
@@ -147,6 +152,40 @@ export const rootDomain = (address = '') => {
   return parts.length >= 2 ? parts.slice(-2).join('.') : host || 'Other';
 };
 
+function localLikeHost(host = '') {
+  const clean = String(host || '').replace(/^\[|\]$/g, '');
+  return (
+    clean === 'localhost' ||
+    clean === '127.0.0.1' ||
+    clean === '::1' ||
+    /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(clean) ||
+    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(clean) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(clean)
+  );
+}
+
+function proxyHostHref(address = '') {
+  const raw = String(address || '').trim();
+  if (!raw) return '';
+  if (/[{}*]/.test(raw)) return '';
+  try {
+    const direct = new URL(raw);
+    if (direct.protocol === 'http:' || direct.protocol === 'https:') return direct.toString();
+    return '';
+  } catch {}
+
+  const candidate = raw.replace(/^\/+/, '');
+  const hostPort = candidate.split('/')[0];
+  if (!hostPort || /\s/.test(hostPort)) return '';
+  const hostOnly = hostPort.replace(/:\d+$/, '');
+  const scheme = localLikeHost(hostOnly) ? 'http' : 'https';
+  try {
+    return new URL(`${scheme}://${hostPort}`).toString();
+  } catch {
+    return '';
+  }
+}
+
 export const selectedImportNames = (value) => String(value || '').split(',').map((x) => x.trim()).filter(Boolean);
 export const selectedTagNames = (value) => {
   const seen = new Set();
@@ -209,10 +248,30 @@ export const StatusDot = ({ check, disabled = false }) => {
 };
 
 export const ProxyRow = memo(function ProxyRow({ site, healthCheck, canEdit, onEdit, onDelete, onToggleDisabled }) {
+  const addresses = Array.isArray(site.addresses) ? site.addresses : [];
   return (
     <div className={`proxy-row ${site.disabled ? 'disabled' : ''}`}>
       <div className="proxy-row-main">
-        <span className="proxy-host" data-label="Host">{site.addresses.join(', ')}</span>
+        <span className="proxy-host" data-label="Host">
+          {addresses.length > 0
+            ? addresses.map((address, index) => {
+              const href = proxyHostHref(address);
+              const key = `${site.id || site.line || 'site'}-address-${index}`;
+              return (
+                <React.Fragment key={key}>
+                  {index > 0 ? ', ' : ''}
+                  {href ? (
+                    <a className="proxy-host-link" href={href} target="_blank" rel="noreferrer noopener">
+                      {address}
+                    </a>
+                  ) : (
+                    <span>{address}</span>
+                  )}
+                </React.Fragment>
+              );
+            })
+            : 'none'}
+        </span>
         <span className="proxy-target" data-label="Upstream">{site.proxies[0]?.upstreams?.join(' ') || 'no upstream'}</span>
         <div className="proxy-local" data-label="Local">
           <StatusDot check={healthCheck} disabled={site.disabled} />

@@ -140,7 +140,7 @@ function TagAutoCompleteInput({ value, onChange, suggestions, placeholder = '' }
   );
 }
 
-export default function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading, api }) {
+export default function Proxies({ config, refresh, setConfig, canEdit, theme, health, loading, api, onConfigChanged }) {
   const empty = { host: '', upstream: '', category: '', tags: '', imports: '', logMode: 'none', logPath: '' };
   const [form, setForm] = useState(empty);
   const [edit, setEdit] = useState(null);
@@ -264,6 +264,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       }
       const data = await api('/api/proxies', { method: 'POST', body: JSON.stringify(payload) });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
+      onConfigChanged?.('Proxy added.');
       setForm(empty);
     } catch (err) {
       setError(err.message);
@@ -290,6 +291,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
           body: JSON.stringify({ content: nextContent, validate: true }),
         });
         setConfig((current) => ({ ...current, content: nextContent, parsed: data.parsed, health: data.health || current.health }));
+        onConfigChanged?.('Proxy updated.');
         setEdit(null);
         return;
       }
@@ -309,6 +311,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       }
       const data = await api(`/api/proxies/${edit.line}`, { method: 'PUT', body: JSON.stringify(payload) });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
+      onConfigChanged?.('Proxy updated.');
       setEdit(null);
     } catch (err) {
       setError(err.message);
@@ -360,6 +363,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       }
       const data = await api(`/api/proxies/${site.line}`, { method: 'DELETE' });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
+      onConfigChanged?.('Proxy deleted.');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -379,6 +383,7 @@ export default function Proxies({ config, refresh, setConfig, canEdit, theme, he
       }
       const data = await api(`/api/proxies/${site.line}/disabled`, { method: 'POST', body: JSON.stringify({ disabled }) });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed, health: data.health || current.health }));
+      onConfigChanged?.(disabled ? 'Proxy disabled.' : 'Proxy enabled.');
     } catch (err) {
       setError(err.message);
     } finally {

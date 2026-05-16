@@ -889,6 +889,41 @@ async function validateConfig(content) {
   return result;
 }
 
+async function formatConfig(content) {
+  const input = String(content || '');
+  const tmp = path.join(os.tmpdir(), `caddyui-fmt-${process.pid}-${Date.now()}-${randomUUID()}.Caddyfile`);
+  await fs.writeFile(tmp, input, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  let result;
+  let formatted = input;
+  try {
+    result = await run('caddy', ['fmt', '--overwrite', tmp]);
+    try {
+      formatted = await fs.readFile(tmp, 'utf8');
+    } catch {}
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
+  if (result.code === -1) {
+    return {
+      ok: false,
+      unavailable: true,
+      code: -1,
+      stdout: result.stdout,
+      stderr: 'Caddy binary is not available in this container. Install/mount caddy to run caddy fmt.',
+      content: input,
+      changed: false,
+    };
+  }
+  return {
+    ok: result.ok,
+    code: result.code,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    content: formatted,
+    changed: formatted !== input,
+  };
+}
+
 async function validateConfigForSettings(settings, content) {
   const normalized = normalizeSettings(settings);
   if (normalized.configMode !== 'api') {
@@ -1512,6 +1547,13 @@ app.post('/api/config/validate', requireTrustedOrigin, auth, requirePermission('
   const settings = await loadSettings();
   const content = typeof req.body?.content === 'string' ? req.body.content : (await readWorkingConfig()).content;
   res.json(await validateConfigForSettings(settings, content));
+});
+
+app.post('/api/config/format', requireTrustedOrigin, auth, requirePermission('edit'), async (req, res) => {
+  const content = typeof req.body?.content === 'string' ? req.body.content : (await readWorkingConfig()).content;
+  const result = await formatConfig(content);
+  if (result.ok) return res.json(result);
+  return res.status(result.unavailable ? 503 : 400).json(result);
 });
 
 app.post('/api/config/reload', requireTrustedOrigin, auth, requirePermission('edit'), async (_req, res) => {

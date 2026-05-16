@@ -151,6 +151,10 @@ select:focus {
   border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
 }
 
+.top-feedback.warning {
+  border-color: color-mix(in srgb, #f59e0b 45%, var(--line));
+}
+
 .top-feedback span {
   flex: 1;
   min-width: 0;
@@ -166,6 +170,12 @@ select:focus {
   padding: 0;
   font-size: 20px;
   line-height: 1;
+}
+
+.top-feedback-action {
+  min-height: 32px;
+  padding: 6px 10px;
+  white-space: nowrap;
 }
 
 .brand,
@@ -640,6 +650,17 @@ label {
 
 .proxy-host {
   font-weight: 650;
+}
+
+.proxy-host-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.proxy-host-link:hover {
+  color: var(--accent);
 }
 
 .proxy-host,

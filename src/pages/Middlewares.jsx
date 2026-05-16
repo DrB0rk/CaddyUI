@@ -28,7 +28,7 @@ function localSnippetBlock(name, body) {
   return `(${name}) {\n${lines}\n}`;
 }
 
-export default function Middlewares({ config, setConfig, canEdit, theme, api }) {
+export default function Middlewares({ config, setConfig, canEdit, theme, api, onConfigChanged }) {
   const snippets = config?.parsed?.snippets || [];
   const [edit, setEdit] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -61,6 +61,7 @@ export default function Middlewares({ config, setConfig, canEdit, theme, api }) 
         body: JSON.stringify({ ...form, body: normalizedBody }),
       });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed }));
+      onConfigChanged?.('Middleware added.');
       setForm({ name: '', body: '' });
     } catch (err) {
       setError(err.message);
@@ -95,6 +96,7 @@ export default function Middlewares({ config, setConfig, canEdit, theme, api }) 
         body: JSON.stringify({ ...edit, body: normalizedBody }),
       });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed }));
+      onConfigChanged?.('Middleware updated.');
       setEdit(null);
     } catch (err) {
       setError(err.message);
@@ -116,6 +118,7 @@ export default function Middlewares({ config, setConfig, canEdit, theme, api }) 
       }
       const data = await api(`/api/middlewares/${item.line}`, { method: 'DELETE' });
       setConfig((current) => ({ ...current, content: data.content, parsed: data.parsed }));
+      onConfigChanged?.('Middleware deleted.');
     } catch (err) {
       setError(err.message);
     } finally {
